@@ -16,7 +16,7 @@ This port is based directly on the torch implementation, and not on an existing 
 - Tensorflow 1.0.0
 
 ### Recommended
-- Linux with Tensorflow GPU edition + cuDNN
+- Linux with Tensorflow CPU edition only !
 
 ### Getting Started
 
@@ -46,6 +46,9 @@ The test run will output an HTML file at `facades_test/index.html` that shows in
 If you have Docker installed, you can use the provided Docker image to run pix2pix without installing the correct version of Tensorflow:
 
 ```sh
+# make the image
+cd docker
+docker build
 # train the model
 python tools/dockrun.py python pix2pix.py \
       --mode train \
