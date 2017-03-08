@@ -1,4 +1,4 @@
-FROM nvidia/cuda:8.0-cudnn5-devel-ubuntu16.04
+FROM ubuntu:16.04
 
 WORKDIR /root
 
@@ -50,6 +50,8 @@ ENV PYTHONPATH $PYCAFFE_ROOT:$PYTHONPATH
 ENV PATH $CAFFE_ROOT/build/tools:$PYCAFFE_ROOT:$PATH
 RUN echo "$CAFFE_ROOT/build/lib" >> /etc/ld.so.conf.d/caffe.conf && ldconfig
 
+RUN apt-get install -y curl
+
 RUN cd $CAFFE_ROOT && curl -O http://vcl.ucsd.edu/hed/hed_pretrained_bsds.caffemodel
 
 # octave
@@ -89,10 +91,28 @@ RUN apt-get install -y --no-install-recommends \
         python-dev \
         rsync \
         software-properties-common \
-        unzip
+        unzip \
+        && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists/*
 
 # gpu tracing in tensorflow
 ENV LD_LIBRARY_PATH /usr/local/cuda/extras/CUPTI/lib64:$LD_LIBRARY_PATH
+
+RUN pip --no-cache-dir install \
+        ipykernel \
+        jupyter \
+        matplotlib \
+        numpy \
+        scipy \
+        sklearn \
+        pandas \
+        Pillow \
+        && \
+        python -m ipykernel.kernelspec
+
+RUN pip --no-cache-dir install \
+http://storage.googleapis.com/tensorflow/linux/cpu/tensorflow-1.0.0-cp27-none-linux_x86_64.whl
 
 RUN pip install \
     appdirs==1.4.0 \
@@ -115,8 +135,7 @@ RUN pip install \
     pyparsing==2.1.10 \
     rsa==3.4.2 \
     six==1.10.0 \
-    uritemplate==3.0.0 \
-    tensorflow-gpu==1.0.0
+    uritemplate==3.0.0 
 
 RUN curl -O https://releases.hashicorp.com/terraform/0.8.7/terraform_0.8.7_linux_amd64.zip && \
     unzip terraform_0.8.7_linux_amd64.zip -d /usr/local/bin && \
