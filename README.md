@@ -48,7 +48,8 @@ If you have Docker installed, you can use the provided Docker image to run pix2p
 ```sh
 # make the image
 cd docker
-docker build
+docker build --tag julien2512/pix2pix-tensorflow .
+cd ..
 # train the model
 python tools/dockrun.py python pix2pix.py \
       --mode train \
