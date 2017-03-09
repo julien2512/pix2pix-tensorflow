@@ -1,17 +1,8 @@
 <html>
 <body>
 
-<div>edges2shoes</div>
-<div id="edges2shoes"></div>
-
-<div>facades</div>
-<div id="facades"></div>
-
-<div>edges2handbags</div>
-<div id="edges2handbags"></div>
-
-<div>edges2cats</div>
-<div id="edges2cats"></div>
+<div>edges2volcanoes v1</div>
+<div id="volcans_export"></div>
 
 <script>
 
@@ -34,8 +25,8 @@ function main() {
   }
 
   create_editor({
-    name: "edges2shoes",
-    generate_url: base_url + "/edges2shoes_AtoB",
+    name: "volcans_export",
+    generate_url: base_url + "/volcans_export",
     mode: "line",
     clear: "#FFFFFF",
     colors: {
@@ -43,65 +34,10 @@ function main() {
       eraser: "#ffffff",
     },
     draw: "#000000",
-    initial_input: "/edges2shoes-input.png",
-    initial_output: "/edges2shoes-output.png",
-    sheet_url: "/edges2shoes-sheet.jpg",
+    initial_input: "/volcans_export-input.png",
+    initial_output: "/volcans_export-output.png"
   })
 
-  create_editor({
-    name: "edges2handbags",
-    generate_url: base_url + "/edges2handbags_AtoB",
-    mode: "line",
-    clear: "#FFFFFF",
-    colors: {
-      line: "#000000",
-      eraser: "#ffffff",
-    },
-    draw: "#000000",
-    initial_input: "/edges2handbags-input.png",
-    initial_output: "/edges2handbags-output.png",
-    sheet_url: "/edges2handbags-sheet.jpg",
-  })
-
-  create_editor({
-    name: "edges2cats",
-    generate_url: base_url + "/edges2cats_AtoB",
-    mode: "line",
-    clear: "#FFFFFF",
-    colors: {
-      line: "#000000",
-      eraser: "#ffffff",
-    },
-    draw: "#000000",
-    initial_input: "/edges2cats-input.png",
-    initial_output: "/edges2cats-output.png",
-    sheet_url: "/edges2cats-sheet.jpg",
-  })
-
-  create_editor({
-    name: "facades",
-    generate_url: base_url + "/facades_BtoA",
-    mode: "rect",
-    colors: {
-      background: "#0006d9",
-      wall: "#0d3dfb",
-      door: "#a50000",
-      "window": "#0075ff",
-      "window sill": "#68f898",
-      "window head": "#1dffdd",
-      "shutter": "#eeed28",
-      balcony: "#b8ff38",
-      trim: "#ff9204",
-      cornice: "#ff4401",
-      column: "#f60001",
-      entrance: "#00c9ff",
-    },
-    clear: "#0d3dfb",
-    draw: "#0075ff",
-    initial_input: "/facades-input.png",
-    initial_output: "/facades-output.png",
-    sheet_url: "/facades-sheet.jpg",
-  })
 
   init()
 }
