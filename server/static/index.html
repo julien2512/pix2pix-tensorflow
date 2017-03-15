@@ -1,8 +1,19 @@
 <html>
 <body>
 
-<div>edges2volcanoes v1</div>
+This server still is for private use and tests purposes.
+Use it for free !
+<br>
+<div>edges2volcanoes v1.1 - 100 images learning - 100 images test - 200 epochs - 208Mb brain</div>
 <div id="volcans_export"></div>
+
+<div>edges2volcanoes v2 - 394 images learning - 100 images test - 223 epochs - 208Mb brain</div>
+<div id="volcans_exportv2"></div>
+
+<div>edges2volcanoes v2.1 - 394 images learning - 100 images test - 429 epochs - 208Mb brain</div>
+<div id="volcans_exportv2.1"></div>
+
+<div>Still dreaming about 600 epochs more => 27/03/17 evening !</div>
 
 <script>
 
@@ -39,6 +50,37 @@ function main() {
     sheet_url: "/volcans_export-sheet.jpg"
   })
 
+  create_editor({
+    name: "volcans_exportv2",
+    generate_url: base_url + "/volcans_exportv2",
+    mode: "line",
+    clear: "#FFFFFF",
+    colors: {
+      line: "#000000",
+      eraser: "#ffffff",
+    },
+    draw: "#000000",
+    initial_input: "/volcans_export-input.png",
+    initial_output: "/volcans_exportv2-output.png",
+    sheet_url: "/volcans_exportv2-sheet.jpg"
+  })
+
+
+
+  create_editor({
+    name: "volcans_exportv2.1",
+    generate_url: base_url + "/volcans_exportv2.1",
+    mode: "line",
+    clear: "#FFFFFF",
+    colors: {
+      line: "#000000",
+      eraser: "#ffffff",
+    },
+    draw: "#000000",
+    initial_input: "/volcans_export-input.png",
+    initial_output: "/volcans_exportv2.1-output.png",
+    sheet_url: "/volcans_exportv2.1-sheet.jpg"
+  })
 
   init()
 }
@@ -269,6 +311,16 @@ render: function() {
           request_in_progress = true
           update()
           xhr.send(b64_to_bin(input_b64))
+        }
+      }
+    })
+
+    v.frame("copy_button", 114-32, 310, 64, 40, () => {
+      if (do_button(v, "copy2all")) {
+        for (var j = 0; j < editors.length; j++) {
+          if (v!=editors[j].view) {
+                editors[j].buffer.drawImage(this.buffer.canvas, 0, 0, 256, 256 )
+          } 
         }
       }
     })
