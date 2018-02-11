@@ -8,6 +8,9 @@ import argparse
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--port", type=int, help="port to publish from the container")
+parser.add_argument("--internport", type=int, default=6006, help="port of the container")
+parser.add_argument("--nogpu", type=bool, default=False, help="set to use CPU only")
+parser.add_argument("--cpuset", help="set cpus in which to allow execution for containers")
 
 # from python 3.3 source
 # https://github.com/python/cpython/blob/master/Lib/shutil.py
@@ -87,6 +90,8 @@ def main():
     docker_path = which("nvidia-docker")
     if docker_path is None:
         docker_path = which("docker")
+    if a.nogpu:
+        docker_path = which("docker")
     
     if docker_path is None:
         raise Exception("docker not found")
@@ -102,15 +107,19 @@ def main():
         "--env",
         "CUDA_CACHE_PATH=/host/tmp/cuda-cache",
         "--env",
-        "GOOGLE_PROJECT=" + os.environ.get("GOOGLE_PROJECT", ""),
-        "--env",
-        "GOOGLE_CREDENTIALS=" + os.environ.get("GOOGLE_CREDENTIALS", ""), 
+        "HOME=/host" + os.environ["HOME"],
     ]
 
     if a.port is not None:
-        docker_args += ["--publish", "%d:%d" % (a.port, a.port)]
+        docker_args += ["--publish", "%d:%d" % (a.port, a.internport)]
 
-    args = [docker_path, "run"] + docker_args + ["affinelayer/pix2pix-tensorflow"] + cmd
+    if (a.cpuset is not None) and a.nogpu:
+        docker_args += ["--cpuset-cpus", a.cpuset]
+
+    args = [docker_path, "run"] + docker_args + ["affinelayer/pix2pix-tensorflow:v2"] + cmd
+    if a.nogpu:
+      args = [docker_path, "run"] + docker_args + ["julien2512:pix2pix-tensorflow-nogpu"] + cmd
+
 
     if not os.access("/var/run/docker.sock", os.R_OK):
         args = ["sudo"] + args
