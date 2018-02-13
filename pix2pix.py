@@ -41,15 +41,18 @@ parser.add_argument("--no_flip", dest="flip", action="store_false", help="don't 
 parser.set_defaults(flip=True)
 parser.add_argument("--lr", type=float, default=0.0002, help="initial learning rate for adam")
 parser.add_argument("--beta1", type=float, default=0.5, help="momentum term of adam")
-parser.add_argument("--l1_weight", type=float, default=100.0, help="weight on L1 term for generator gradient")
-parser.add_argument("--gan_weight", type=float, default=1.0, help="weight on GAN term for generator gradient")
+
+parser.add_argument("--f1", type=int, default=20, help="number of full layer to get the situation")
+parser.add_argument("--f2", type=int, default=20, help="number of full layer to get the next bet")
+parser.add_argument("--frames", type=int, default=10, help="number of frames for each to generate commands")
+
 a = parser.parse_args()
 
 EPS = 1e-12
 CROP_SIZE = 256
 
 Examples = collections.namedtuple("Examples", "paths, inputs, targets, count, steps_per_epoch")
-Model = collections.namedtuple("Model", "outputs, gen_loss_L1, gen_grads_and_vars, train")
+Model = collections.namedtuple("Model", "outputs, gen_loss_L1, gen_grads_and_vars, train, next_commands")
 
 
 def preprocess(image):
@@ -268,25 +271,62 @@ def create_generator(generator_inputs, generator_outputs_channels):
             output = batchnorm(convolved)
             layers.append(output)
 
-    # fully_connected: [batch, 2, 2, ngf * 8] => [batch, 13, 10, 1]
-    with tf.variable_scope("fully_connected"):
+    with tf.variable_scope("situation_analysis"):
+        situation_analysis = tf.reshape(layers[-1],[2*a.ngf,4])
+
+    for next_commands_channels in range(1,a.f1-1):
+        # fully_connected: [batch, 1, 1, ngf * 8] => [batch, ngf*8]
+        with tf.variable_scope("f1_fully_connected_%d" % (next_commands_channels)):
+            rectified = tf.nn.relu(layers[-1])
+            output = commands(rectified, a.ngf*8)
+            layers.append(output)
+
+    with tf.variable_scope("next_commands"):
+        # fully_connected: [batch, ngf * 8] => [batch, 12 * 11]
         rectified = tf.nn.relu(layers[-1])
-        output = commands(rectified, 12*11); # 10 sets of 12 commands + 12 metadata bets
-        output = tf.reshape(output, [11,12])
+        output = commands(rectified, 12*a.frames) # 10 sets of 12 commands
+        output = tf.reshape(output, [a.frames,12])
         output = tf.abs(tf.tanh(output)); # probability values for the commands, need to adjust it for the bets
         layers.append(output)
 
-    return layers[-1]
+    next_commands = layers[-1]
+
+    # commands & situation analysis
+    input = tf.reshape(tf.concat((tf.reshape(layers[-1],[3*a.frames,4]), situation_analysis), axis=0) , [a.ngf*2+3*a.frames,4])
+
+    with tf.variable_scope("f2_fully_connected_1"):
+        rectified = tf.nn.relu(input)
+        output = commands(rectified, a.ngf*8+12*a.frames)
+        layers.append(output)
+
+    for next_bet_channels in range(2,a.f2-1):
+        # fully_connected: [batch, 12*11+ngf
+        with tf.variable_scope("f2_fully_connected_%d" % (next_bet_channels)):
+            rectified = tf.nn.relu(layers[-1])
+            output = commands(rectified, a.ngf*8+12*a.frames)
+            layers.append(output)
+
+    # next bet [batch, 12]
+    with tf.variable_scope("next_bet"):
+        rectified = tf.nn.relu(layers[-1])
+        output = commands(rectified, 12)
+        output = tf.abs(output)
+        layers.append(output)
+
+    concat = tf.concat((layers[-1],next_commands),axis=0)
+
+    return concat
 
 
 def create_model(inputs, targets):
     with tf.variable_scope("generator") as scope:
         out_channels = int(targets.get_shape()[-1])
         outputs = create_generator(inputs, out_channels)
+        next_commands = outputs[1:(a.frames+1)]
 
     with tf.name_scope("generator_loss"):
         # abs(targets - outputs) => 0
-        gen_loss_L1 = tf.reduce_mean(tf.abs(targets - outputs[10])) # metadata bets on the last line
+        gen_loss_L1 = tf.reduce_mean(tf.abs(targets - outputs[0])) # metadata bets on the last line
         gen_loss = gen_loss_L1
 
     with tf.name_scope("generator_train"):
@@ -304,7 +344,8 @@ def create_model(inputs, targets):
     return Model(
         gen_loss_L1=ema.average(gen_loss_L1),
         gen_grads_and_vars=gen_grads_and_vars,
-        outputs=outputs,
+        outputs=outputs[0],
+        next_commands=next_commands,
         train=tf.group(update_losses, incr_global_step, gen_train),
     )
 
@@ -318,7 +359,7 @@ def save_images(fetches, step=None):
     for i, in_path in enumerate(fetches["paths"]):
         name, _ = os.path.splitext(os.path.basename(in_path.decode("utf8")))
         fileset = {"name": name, "step": step}
-        for kind in ["inputs", "outputs", "targets"]:
+        for kind in ["inputs", "outputs", "targets", "next_commands"]:
             filename = name + "-" + kind + ".png"
             if step is not None:
                 filename = "%08d-%s" % (step, filename)
@@ -448,6 +489,7 @@ def main():
     inputs = deprocess(examples.inputs)
     targets = deprocess(examples.targets)
     outputs = deprocess(model.outputs)
+    next_commands = deprocess(model.next_commands)
 
     def convert(image):
         if a.aspect_ratio != 1.0:
@@ -466,7 +508,8 @@ def main():
             "paths": examples.paths,
             "inputs": tf.map_fn(tf.image.encode_png, converted_inputs, dtype=tf.string, name="input_pngs"),
             "outputs": outputs,
-            "targets": targets
+            "targets": targets,
+            "next_commands": next_commands,
         }
 
     # summaries
@@ -478,6 +521,9 @@ def main():
 
     with tf.name_scope("outputs_summary"):
         tf.summary.tensor_summary("outputs", outputs)
+
+    with tf.name_scope("next_commands"):
+        tf.summary.tensor_summary("next_commands", next_commands)
 
     tf.summary.scalar("generator_loss_L1", model.gen_loss_L1)
 
