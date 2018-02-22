@@ -45,6 +45,7 @@ parser.add_argument("--beta1", type=float, default=0.5, help="momentum term of a
 parser.add_argument("--f1", type=int, default=20, help="number of full layer to get the situation")
 parser.add_argument("--f2", type=int, default=20, help="number of full layer to get the next bet")
 parser.add_argument("--frames", type=int, default=10, help="number of frames for each to generate commands")
+parser.add_argument("--command_fire_level", type=float, default=0.001, help="level at which a command is fired")
 
 a = parser.parse_args()
 
@@ -104,8 +105,6 @@ def conv(batch_input, out_channels, stride):
 
 def commands(input, out_channels):
     with tf.variable_scope("commands"):
-        #in_channels = input.get_shape()[3]
-        #input_flat = tf.reshape(input, [1, in_channels])
         commands = tf.layers.dense(input,out_channels); 
         return commands
 
@@ -197,6 +196,7 @@ def load_examples():
             raw_input = tf.identity(raw_input)
 
         raw_input.set_shape([None, None, 3])
+        raw_input = preprocess(raw_input)
 
     # synchronize seed for image operations so that we do the same operations to both
     # input and output images
@@ -232,12 +232,21 @@ def load_examples():
     else:
         raise Exception("all meta files names are not numbers")
 
-    target_paths = meta_paths
+    target_paths = glob.glob(os.path.join(a.input_dir, "*.meta"))
+    if len(target_paths) == 0:
+        raise Exception("input_dir contains no meta files")
+    if len(target_paths) != len(input_paths)+1:
+        raise Exception("input_dir contains not enough meta files")
+
+    if all(get_name(path).isdigit() for path in target_paths):
+        target_paths = sorted(target_paths, key=lambda path: int(get_name(path)))
+    else:
+        raise Exception("all meta files names are not numbers")
 
     # prepare data from meta file
     def split(contents):
         tensor = tf.string_split([contents],'\t').values
-        tensor = tf.reshape(tensor,[1,12])
+        tensor = tf.reshape(tensor,[12])
         tensor = tf.string_to_number(tensor,tf.float32)
         return tensor
 
@@ -245,19 +254,19 @@ def load_examples():
         meta_path_queue = tf.train.string_input_producer(meta_paths)
         meta_reader = tf.WholeFileReader()
         meta_paths, meta_contents = meta_reader.read(meta_path_queue)
-        meta_contents = tf.Print(meta_contents, [meta_contents], "meta_contents:", summarize=100)
+#        meta_contents = tf.Print(meta_contents, [meta_contents], "meta_contents:", summarize=100)
         meta_input = split(meta_contents)
 
     with tf.name_scope("load_targets"):
         targets_path_queue = tf.train.string_input_producer(target_paths)
         targets_path_queue.dequeue() # this is why we need len(input_paths)+1 meta paths 
         targets_reader = tf.WholeFileReader()
-        target_paths, target_contents = meta_reader.read(meta_path_queue)
-        target_contents = tf.Print(target_contents, [target_contents], "target_contents:", summarize=100)
+        target_paths, target_contents = targets_reader.read(targets_path_queue)
+#        target_contents = tf.Print(target_contents, [target_contents], "target_contents:", summarize=100)
         target_input = split(target_contents) 
 
-    meta_input = tf.Print(meta_input, [meta_input], "meta_input:",summarize=100)
-    target_input = tf.Print(target_input, [target_input], "targets_input:", summarize=100)
+#    meta_input = tf.Print(meta_input, [meta_input], "load meta_input:",summarize=100)
+#    target_input = tf.Print(target_input, [target_input], "load targets_input:", summarize=100)
 
     paths_batch, inputs_batch, meta_batch, targets_batch = tf.train.batch([paths, input_images, meta_input, target_input], batch_size=a.batch_size)
     steps_per_epoch = int(math.ceil(len(input_paths) / a.batch_size))
@@ -275,10 +284,13 @@ def load_examples():
 def create_generator(generator_inputs, meta_inputs, generator_outputs_channels):
     layers = []
 
+#    generator_inputs = tf.Print(generator_inputs,[generator_inputs],"generator_inputs:",summarize=256)
+
     # encoder_1: [batch, 256, 256, in_channels] => [batch, 128, 128, ngf]
     with tf.variable_scope("encoder_1"):
-        output = conv(generator_inputs, a.ngf, stride=2)
-        output = tf.Print(output,[output],"output encoder_1",summarize=100)
+        output = lrelu(generator_inputs, 0.2)
+        output = conv(output, a.ngf, stride=2)
+#        output = tf.Print(output,[output],"output encoder_1",summarize=100)
         layers.append(output)
 
     layer_specs = [
@@ -289,7 +301,7 @@ def create_generator(generator_inputs, meta_inputs, generator_outputs_channels):
         a.ngf * 8, # encoder_6: [batch, 8, 8, ngf * 8] => [batch, 4, 4, ngf * 8]
         a.ngf * 8, # encoder_7: [batch, 4, 4, ngf * 8] => [batch, 2, 2, ngf * 8]
 #        a.ngf * 8, # encoder_8: [batch, 2, 2, ngf * 8] => [batch, 1, 1, ngf * 8]
-# do not know why encode 8 is fully 0
+# do not know why encode 8 is fully 0. skip it.
     ]
 
     for out_channels in layer_specs:
@@ -298,50 +310,60 @@ def create_generator(generator_inputs, meta_inputs, generator_outputs_channels):
             # [batch, in_height, in_width, in_channels] => [batch, in_height/2, in_width/2, out_channels]
             convolved = conv(rectified, out_channels, stride=2)
             output = batchnorm(convolved)
-            output = tf.Print(output,[output],"output encoder_%d" % (len(layers)+1),summarize=100)
+#            output = tf.Print(output,[output],"output encoder_%d" % (len(layers)+1),summarize=100)
             layers.append(output)
 
+    # the last layer to get the situation analysis
+    # aims to reduce the shape because of the encode 8 zero bug
     with tf.variable_scope("situation_analysis"):
-        situation_analysis = tf.reshape(layers[-1],[8*a.ngf,4])
+        # fully_connected: [batch, 2, 2, 8*ngf] => [batch, 2*4*ngf]
+        rectified = tf.nn.relu(layers[-1])
+        output = tf.reshape(output,[a.batch_size,2*2*a.ngf*8])
+        output = commands(output, 2*a.ngf*4)
+        layers.append(output)
+        situation_analysis = output
     # to train computer to cheat is not allowed
-    # so that meta_inputs is not necessary in the model
+    # so that meta_inputs is not really necessary in the model
     #    meta_inputs = tf.reshape(meta_inputs,[-1,4])
     #    layers.append(tf.concat(situation_analysis,meta_inputs))
-        situation_analysis = tf.Print(situation_analysis,[situation_analysis],'situation_analysis:',summarize=100)
+#        situation_analysis = tf.Print(situation_analysis,[situation_analysis],'situation_analysis:',summarize=100)
+
 
     for next_commands_channels in range(1,a.f1-1):
-        # fully_connected: [batch, 1, 1, 4*ngf * 8] => [batch, 4*ngf*8]
+        # fully_connected: [batch, 4*ngf*2] => [batch, 4*ngf*2]
         with tf.variable_scope("f1_fully_connected_%d" % (next_commands_channels)):
             rectified = tf.nn.relu(layers[-1])
-            output = commands(rectified, 4*a.ngf*8)
-            output = tf.Print(output,[output],"output f1_%d" % (next_commands_channels),summarize=100)
+            output = commands(rectified, a.ngf*8)
+#            output = tf.Print(output,[output],"output f1_%d" % (next_commands_channels),summarize=100)
             layers.append(output)
 
+
     with tf.variable_scope("next_commands"):
-        # fully_connected: [batch, 4 * ngf * 8] => [batch, 12 * 11]
+        # fully_connected: [batch, 4 * ngf * 2] => [batch, frames, 12]
         rectified = tf.nn.relu(layers[-1])
-        rectified = tf.reshape(rectified, [1,4*4*a.ngf*8])
-        output = commands(rectified, 12*a.frames) # 10 sets of 12 commands
-        output = tf.reshape(output, [a.frames,12])
-        output = tf.abs(tf.tanh(output)); # probability values for the commands, need to adjust it for the bets
-        output = tf.Print(output,[output],"output next_commands",summarize=100)
+        rectified = tf.reshape(rectified, [a.batch_size,4*a.ngf*2])
+        output = commands(output, 12*a.frames) # 10 sets of 12 commands
+        output = tf.reshape(output, [a.batch_size,a.frames,12])
+        output = tf.abs(tf.tanh(output)); # probability values for the commands, integers later for the bets
+#        output = tf.Print(output,[output],"output next_commands",summarize=100)
+        next_commands = output
         layers.append(output)
 
-    next_commands = layers[-1]
-
     # commands & situation analysis
-    input = tf.reshape(tf.concat((tf.reshape(layers[-1],[3*a.frames,4]), situation_analysis), axis=0) , [4*a.ngf*2+3*a.frames,4])
+    input = tf.concat((tf.reshape(next_commands,[a.batch_size,3*a.frames,4]), tf.reshape(situation_analysis,[a.batch_size,2*a.ngf,4])), axis=1)
 
     with tf.variable_scope("f2_fully_connected_1"):
         rectified = tf.nn.relu(input)
-        output = commands(rectified, a.ngf*8+12*a.frames)
+        output = tf.reshape(rectified,[a.batch_size,2*a.ngf*4+12*a.frames])
+        output = commands(output, a.ngf*8+12*a.frames)
         layers.append(output)
 
     for next_bet_channels in range(2,a.f2-1):
-        # fully_connected: [batch, 12*11+ngf
+        # fully_connected: [batch, 12*11+ngf*8] => [batch, 12*frames+ngf*8]
         with tf.variable_scope("f2_fully_connected_%d" % (next_bet_channels)):
             rectified = tf.nn.relu(layers[-1])
             output = commands(rectified, a.ngf*8+12*a.frames)
+#            output = tf.Print(output,[output],"output f2_%d" % (next_bet_channels), summarize=100)
             layers.append(output)
 
     # next bet [batch, 12]
@@ -349,10 +371,14 @@ def create_generator(generator_inputs, meta_inputs, generator_outputs_channels):
         rectified = tf.nn.relu(layers[-1])
         output = commands(rectified, 12)
         output = tf.abs(output)
+        output = tf.scalar_mul(100000,output)
+#        output = tf.Print(output,[output],"output next_bet", summarize=100)
+        next_bet = output
         layers.append(output)
 
-    concat = tf.concat((layers[-1],next_commands),axis=0)
-
+    # [batch,12]+[batch,frames,12] => [batch,frames+1,12]
+    concat = tf.concat((tf.reshape(next_bet,[a.batch_size,1,12]),next_commands),axis=1)
+#    concat = tf.Print(concat,[concat],'generator_concat:',summarize=100)
     return concat
 
 
@@ -360,18 +386,17 @@ def create_model(inputs, meta, targets):
     with tf.variable_scope("generator") as scope:
         out_channels = int(targets.get_shape()[-1])
         outputs = create_generator(inputs, meta, out_channels)
-        outputs = tf.Print(outputs,[outputs],"outputs full:",summarize=100)
-        next_commands = outputs[1:(a.frames+1)]
-        # need to simplify the output 
-        next_commands = tf.Print(next_commands,[next_commands],"next_commands:",summarize=100)
+#        outputs = tf.Print(outputs,[outputs],"outputs full:",summarize=100)
+        next_commands = outputs[-1][1:(a.frames+1)]
+        next_bet = outputs[-1][0]
+#        next_commands = tf.Print(next_commands,[next_commands],"next_commands:",summarize=100)
+#        next_bet = tf.Print(next_bet,[next_bet],"next_bet:",summarize=100)
 
     with tf.name_scope("generator_loss"):
         # abs(targets - outputs) => 0
-        targets = tf.Print(targets,[targets],"targets:",summarize=10)
-        outputs_0 = outputs[0]
-        outputs_0 = tf.Print(outputs_0,[outputs_0],"outputs_0",summarize=10)
-        gen_loss_L1 = tf.reduce_mean(tf.abs(targets - outputs_0)) # metadata bets on the last line
-        gen_loss_L1 = tf.Print(gen_loss_L1,[gen_loss_L1],"gen_loss_L1:")
+#        targets = tf.Print(targets,[targets],"targets:",summarize=100)
+        gen_loss_L1 = tf.reduce_mean(tf.abs(targets - next_bet)) # metadata bets on the last line
+#        gen_loss_L1 = tf.Print(gen_loss_L1,[gen_loss_L1],"gen_loss_L1:")
 
     with tf.name_scope("generator_train"):
         gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
@@ -388,7 +413,7 @@ def create_model(inputs, meta, targets):
     return Model(
         gen_loss_L1=ema.average(gen_loss_L1),
         gen_grads_and_vars=gen_grads_and_vars,
-        outputs=outputs[0],
+        outputs=next_bet,
         next_commands=next_commands,
         train=tf.group(update_losses, incr_global_step, gen_train),
     )
@@ -403,13 +428,18 @@ def save_images(fetches, step=None):
     for i, in_path in enumerate(fetches["paths"]):
         name, _ = os.path.splitext(os.path.basename(in_path.decode("utf8")))
         fileset = {"name": name, "step": step}
-        for kind in ["inputs", "outputs", "targets", "next_commands"]:
-            filename = name + "-" + kind + ".png"
+        for kind in ["inputs", "outputs", "meta", "targets", "next_commands"]:
+            if kind == "inputs":
+              filename = name + ".png"
+            else:
+              filename = name + "."+kind
             if step is not None:
                 filename = "%08d-%s" % (step, filename)
             fileset[kind] = filename
             out_path = os.path.join(image_dir, filename)
             contents = fetches[kind][i]
+#            if not kind =="inputs":
+#              print(contents)
             with open(out_path, "wb") as f:
                 f.write(contents)
         filesets.append(fileset)
@@ -490,6 +520,7 @@ def main():
         input_image.set_shape([CROP_SIZE, CROP_SIZE, 3])
         batch_input = tf.expand_dims(input_image, axis=0)
 
+        #correct this
         with tf.variable_scope("generator") as scope:
             batch_output = deprocess(create_generator(preprocess(batch_input), 3))
 
@@ -531,10 +562,10 @@ def main():
     model = create_model(examples.inputs, examples.meta, examples.targets)
 
     inputs = deprocess(examples.inputs)
-    meta   = deprocess(examples.meta)
-    targets = deprocess(examples.targets)
-    outputs = deprocess(model.outputs)
-    next_commands = deprocess(model.next_commands)
+    meta   = examples.meta
+    targets = examples.targets
+    outputs = model.outputs
+    next_commands = model.next_commands
 
     def convert(image):
         if a.aspect_ratio != 1.0:
@@ -548,14 +579,44 @@ def main():
     with tf.name_scope("convert_inputs"):
         converted_inputs = convert(inputs)
 
+    commands_snes9x = ['UP','DOWN','LEFT','RIGHT','A','B','X','Y','L','R','START','SELECT']
+    commands_snes9x = tf.tile(commands_snes9x,[a.frames])
+    commands_snes9x = tf.reshape(commands_snes9x,[a.frames,12])
+
+    def convert_commands(commands):
+        fire_level = tf.fill(commands.get_shape(),a.command_fire_level)
+#        fire_level = tf.Print(fire_level,[fire_level],'fire_level:',summarize=100)       
+#        commands   = tf.Print(commands,[commands],'commands:',summarize=100)
+        conditions = tf.greater_equal(commands, fire_level) 
+#        conditions = tf.Print(conditions,[conditions],"conditions:",summarize=100)
+        empty      = tf.fill(commands.get_shape(),'')
+        converted_commands = tf.where(conditions, commands_snes9x, empty)
+#        converted_commands = tf.Print(converted_commands,[converted_commands],"converted_commands:",summarize=100)
+        converted_commands = tf.reduce_join(converted_commands, 1, separator=' ')
+#        converted_commands = tf.Print(converted_commands,[converted_commands],"converted_commands:",summarize=100)
+        converted_commands = tf.reduce_join(converted_commands, 0, separator='\n')
+#        converted_commands = tf.Print(converted_commands,[converted_commands],"converted_commands:",summarize=100)
+
+        return [converted_commands]
+
+    with tf.name_scope("convert_outputs"):
+        converted_next_commands = convert_commands(next_commands)
+
+    def convert_meta(meta_to_convert):
+        converted_meta = tf.to_int32(meta_to_convert)
+        converted_meta = tf.as_string(converted_meta)
+        converted_meta = tf.reduce_join(converted_meta,0,separator=' ')
+#        converted_meta = tf.Print(converted_meta,[converted_meta],"converted_meta:",summarize=100)
+        return [converted_meta]
+
     with tf.name_scope("encode_images"):
         display_fetches = {
             "paths": examples.paths,
             "inputs": tf.map_fn(tf.image.encode_png, converted_inputs, dtype=tf.string, name="input_pngs"),
-            "meta": meta,
-            "outputs": outputs,
-            "targets": targets,
-            "next_commands": next_commands,
+            "meta": convert_meta(meta),
+            "outputs": convert_meta(outputs),
+            "targets": convert_meta(targets),
+            "next_commands": converted_next_commands,
         }
 
     # summaries
