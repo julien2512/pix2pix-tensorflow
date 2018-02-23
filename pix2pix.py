@@ -46,6 +46,8 @@ parser.add_argument("--f1", type=int, default=20, help="number of full layer to 
 parser.add_argument("--f2", type=int, default=20, help="number of full layer to get the next bet")
 parser.add_argument("--frames", type=int, default=10, help="number of frames for each to generate commands")
 parser.add_argument("--command_fire_level", type=float, default=0.001, help="level at which a command is fired")
+parser.add_argument("--magic_weight", type=float, default=0.08, help="weight of magic formula over L1 loss")
+parser.add_argument("--l1_weight", type=float, default=0.02, help="weight of L1 loss")
 
 a = parser.parse_args()
 
@@ -53,7 +55,7 @@ EPS = 1e-12
 CROP_SIZE = 256
 
 Examples = collections.namedtuple("Examples", "paths, inputs, meta, targets, count, steps_per_epoch")
-Model = collections.namedtuple("Model", "outputs, gen_loss_L1, gen_grads_and_vars, train, next_commands")
+Model = collections.namedtuple("Model", "outputs, gen_loss, gen_grads_and_vars, train, next_commands")
 
 
 def preprocess(image):
@@ -224,22 +226,11 @@ def load_examples():
     meta_paths = glob.glob(os.path.join(a.input_dir, "*.meta"))
     if len(meta_paths) == 0:
         raise Exception("input_dir contains no meta files")
-    if len(meta_paths) != len(input_paths)+1:
+    if len(meta_paths) != len(input_paths):
         raise Exception("input_dir contains not enough meta files")
 
     if all(get_name(path).isdigit() for path in meta_paths):
         meta_paths = sorted(meta_paths, key=lambda path: int(get_name(path)))
-    else:
-        raise Exception("all meta files names are not numbers")
-
-    target_paths = glob.glob(os.path.join(a.input_dir, "*.meta"))
-    if len(target_paths) == 0:
-        raise Exception("input_dir contains no meta files")
-    if len(target_paths) != len(input_paths)+1:
-        raise Exception("input_dir contains not enough meta files")
-
-    if all(get_name(path).isdigit() for path in target_paths):
-        target_paths = sorted(target_paths, key=lambda path: int(get_name(path)))
     else:
         raise Exception("all meta files names are not numbers")
 
@@ -257,18 +248,33 @@ def load_examples():
 #        meta_contents = tf.Print(meta_contents, [meta_contents], "meta_contents:", summarize=100)
         meta_input = split(meta_contents)
 
-    with tf.name_scope("load_targets"):
-        targets_path_queue = tf.train.string_input_producer(target_paths)
-        targets_path_queue.dequeue() # this is why we need len(input_paths)+1 meta paths 
-        targets_reader = tf.WholeFileReader()
-        target_paths, target_contents = targets_reader.read(targets_path_queue)
+    target_paths = glob.glob(os.path.join(a.input_dir, "*.meta_targets"))
+    if len(target_paths) == 0:
+        target_input = None
+    else:
+        if all(get_name(path).isdigit() for path in target_paths):
+            target_paths = sorted(target_paths, key=lambda path: int(get_name(path)))
+        else:
+            raise Exception("all meta targets files names are not numbers")
+
+        with tf.name_scope("load_targets"):
+            targets_path_queue = tf.train.string_input_producer(target_paths)
+            targets_path_queue.dequeue() # this is why we need len(input_paths)+1 meta paths 
+            targets_reader = tf.WholeFileReader()
+            target_paths, target_contents = targets_reader.read(targets_path_queue)
 #        target_contents = tf.Print(target_contents, [target_contents], "target_contents:", summarize=100)
-        target_input = split(target_contents) 
+            target_input = split(target_contents) 
 
 #    meta_input = tf.Print(meta_input, [meta_input], "load meta_input:",summarize=100)
-#    target_input = tf.Print(target_input, [target_input], "load targets_input:", summarize=100)
+#    if target_input is not None:
+#      target_input = tf.Print(target_input, [target_input], "load targets_input:", summarize=100)
 
-    paths_batch, inputs_batch, meta_batch, targets_batch = tf.train.batch([paths, input_images, meta_input, target_input], batch_size=a.batch_size)
+    if target_input is not None:
+      paths_batch, inputs_batch, meta_batch, targets_batch = tf.train.batch([paths, input_images, meta_input, target_input], batch_size=a.batch_size)
+    else:
+      paths_batch, inputs_batch, meta_batch = tf.train.batch([paths, input_images, meta_input], batch_size=a.batch_size)
+      targets_batch = None
+
     steps_per_epoch = int(math.ceil(len(input_paths) / a.batch_size))
 
     return Examples(
@@ -281,7 +287,7 @@ def load_examples():
     )
 
 
-def create_generator(generator_inputs, meta_inputs, generator_outputs_channels):
+def create_generator(generator_inputs, meta_inputs):
     layers = []
 
 #    generator_inputs = tf.Print(generator_inputs,[generator_inputs],"generator_inputs:",summarize=256)
@@ -381,41 +387,88 @@ def create_generator(generator_inputs, meta_inputs, generator_outputs_channels):
 #    concat = tf.Print(concat,[concat],'generator_concat:',summarize=100)
     return concat
 
+# assume bet[0] = P1 life
+#        bet[1] = P2 life
+#        bet[2] = time
+#
+# this magic formula aims to 
+# optimize p1_life & p2_life by time
+# but not to perfect, 
+# and considering actual performances !
+def get_magic_target(current, bet):
+
+    p1_life = bet[:,0:1]     # ex:  104
+    p2_life = bet[:,1:2]     # ex:  176
+    time    = current[:,2:3] # ex:  107
+#    time = tf.Print(time,[time],"time:")
+
+    max_kill_time = tf.fill([a.batch_size,1],150.0)
+    max_time = tf.fill([a.batch_size,1],200.0)
+    max_life = max_time
+
+#    magic_p2_life = tf.subtract(max_kill_time,time)
+    magic_p2_life = time
+    magic_p2_life = tf.multiply(magic_p2_life,max_life)
+    magic_p2_life = tf.divide(magic_p2_life, max_kill_time)
+    magic_p2_life = tf.minimum(p2_life,magic_p2_life)
+    
+#    magic_p1_life = tf.subtract(max_time,time)
+    magic_p1_life = time
+    magic_p1_life = tf.multiply(magic_p1_life,max_life)
+    magic_p1_life = tf.divide(magic_p1_life, max_time)
+    magic_p1_life = tf.minimum(max_life,tf.maximum(p1_life,magic_p1_life))
+
+    magic_bet = tf.concat((magic_p1_life,magic_p2_life,time,tf.fill([a.batch_size,12-3],0.0)),axis=1)
+
+    return magic_bet
 
 def create_model(inputs, meta, targets):
     with tf.variable_scope("generator") as scope:
-        out_channels = int(targets.get_shape()[-1])
-        outputs = create_generator(inputs, meta, out_channels)
+        outputs = create_generator(inputs, meta)
 #        outputs = tf.Print(outputs,[outputs],"outputs full:",summarize=100)
-        next_commands = outputs[-1][1:(a.frames+1)]
-        next_bet = outputs[-1][0]
+        next_commands = outputs[:,1:(a.frames+1)]
+        next_bet = tf.reshape(outputs[:,0:1],[a.batch_size,12])
 #        next_commands = tf.Print(next_commands,[next_commands],"next_commands:",summarize=100)
 #        next_bet = tf.Print(next_bet,[next_bet],"next_bet:",summarize=100)
+
+    if targets is None:
+        targets = next_bet # without targets, no change on model
 
     with tf.name_scope("generator_loss"):
         # abs(targets - outputs) => 0
 #        targets = tf.Print(targets,[targets],"targets:",summarize=100)
-        gen_loss_L1 = tf.reduce_mean(tf.abs(targets - next_bet)) # metadata bets on the last line
+        gen_loss_L1 = tf.reduce_mean(tf.abs(targets - next_bet))
 #        gen_loss_L1 = tf.Print(gen_loss_L1,[gen_loss_L1],"gen_loss_L1:")
+
+        magic_target = get_magic_target(targets,next_bet)
+#        magic_target = tf.Print(magic_target,[magic_target],"magic_target:",summarize=100)
+        magic_loss = tf.reduce_mean(tf.abs(magic_target - next_bet))
+#        magic_loss  = tf.Print(magic_loss, [magic_loss], "magic_loss:")
+
+        gen_loss = tf.add(tf.scalar_mul(a.l1_weight,gen_loss_L1), tf.scalar_mul(a.magic_weight,magic_loss))
+#        gen_loss = tf.Print(gen_loss,[gen_loss],"gen_loss:")
 
     with tf.name_scope("generator_train"):
         gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
         gen_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-        gen_grads_and_vars = gen_optim.compute_gradients(gen_loss_L1, var_list=gen_tvars)
+        gen_grads_and_vars = gen_optim.compute_gradients(gen_loss, var_list=gen_tvars)
         gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
 
     ema = tf.train.ExponentialMovingAverage(decay=0.99)
-    update_losses = ema.apply([gen_loss_L1])
+    update_losses = ema.apply([gen_loss])
 
     global_step = tf.contrib.framework.get_or_create_global_step()
     incr_global_step = tf.assign(global_step, global_step+1)
 
+    gen_loss = ema.average(gen_loss)
+    train = tf.group(update_losses, incr_global_step, gen_train)
+
     return Model(
-        gen_loss_L1=ema.average(gen_loss_L1),
+        gen_loss=gen_loss,
         gen_grads_and_vars=gen_grads_and_vars,
         outputs=next_bet,
         next_commands=next_commands,
-        train=tf.group(update_losses, incr_global_step, gen_train),
+        train=train,
     )
 
 
@@ -437,11 +490,12 @@ def save_images(fetches, step=None):
                 filename = "%08d-%s" % (step, filename)
             fileset[kind] = filename
             out_path = os.path.join(image_dir, filename)
-            contents = fetches[kind][i]
-#            if not kind =="inputs":
-#              print(contents)
-            with open(out_path, "wb") as f:
-                f.write(contents)
+            if len(fetches[kind]) != 0:
+                contents = fetches[kind][i]
+#                if not kind =="inputs":
+#                  print(contents)
+                with open(out_path, "wb") as f:
+                    f.write(contents)
         filesets.append(fileset)
     return filesets
 
@@ -558,7 +612,9 @@ def main():
     examples = load_examples()
     print("examples count = %d" % examples.count)
 
-    # inputs and targets are [batch_size, height, width, channels]
+    # inputs are [batch_size, height, width, channels]
+    # targets are [batch_size, 12]
+    # meta are [batch_size, 12]
     model = create_model(examples.inputs, examples.meta, examples.targets)
 
     inputs = deprocess(examples.inputs)
@@ -579,9 +635,10 @@ def main():
     with tf.name_scope("convert_inputs"):
         converted_inputs = convert(inputs)
 
-    commands_snes9x = ['UP','DOWN','LEFT','RIGHT','A','B','X','Y','L','R','START','SELECT']
-    commands_snes9x = tf.tile(commands_snes9x,[a.frames])
-    commands_snes9x = tf.reshape(commands_snes9x,[a.frames,12])
+    commands_snes9x = [[['UP','DOWN','LEFT','RIGHT','A','B','X','Y','L','R','START','SELECT']]]
+#    commands_snes9x = tf.Print(commands_snes9x,[commands_snes9x],"commands_snes9x:",summarize=1000)
+    commands_snes9x1 = tf.tile(commands_snes9x,[a.batch_size,a.frames,1])
+#    commands_snes9x1 = tf.Print(commands_snes9x1,[commands_snes9x1],"commands_snes9x(1):",summarize=1000)
 
     def convert_commands(commands):
         fire_level = tf.fill(commands.get_shape(),a.command_fire_level)
@@ -590,24 +647,27 @@ def main():
         conditions = tf.greater_equal(commands, fire_level) 
 #        conditions = tf.Print(conditions,[conditions],"conditions:",summarize=100)
         empty      = tf.fill(commands.get_shape(),'')
-        converted_commands = tf.where(conditions, commands_snes9x, empty)
+        converted_commands = tf.where(conditions, commands_snes9x1, empty)
 #        converted_commands = tf.Print(converted_commands,[converted_commands],"converted_commands:",summarize=100)
-        converted_commands = tf.reduce_join(converted_commands, 1, separator=' ')
+        converted_commands = tf.reduce_join(converted_commands, 2, separator=' ')
 #        converted_commands = tf.Print(converted_commands,[converted_commands],"converted_commands:",summarize=100)
-        converted_commands = tf.reduce_join(converted_commands, 0, separator='\n')
+        converted_commands = tf.reduce_join(converted_commands, 1, separator='\n')
 #        converted_commands = tf.Print(converted_commands,[converted_commands],"converted_commands:",summarize=100)
 
-        return [converted_commands]
+        return converted_commands
 
     with tf.name_scope("convert_outputs"):
         converted_next_commands = convert_commands(next_commands)
 
     def convert_meta(meta_to_convert):
-        converted_meta = tf.to_int32(meta_to_convert)
-        converted_meta = tf.as_string(converted_meta)
-        converted_meta = tf.reduce_join(converted_meta,0,separator=' ')
-#        converted_meta = tf.Print(converted_meta,[converted_meta],"converted_meta:",summarize=100)
-        return [converted_meta]
+        if meta_to_convert is not None:
+            converted_meta = tf.to_int32(meta_to_convert)
+            converted_meta = tf.as_string(converted_meta)
+            converted_meta = tf.reduce_join(converted_meta,1,separator=' ')
+#            converted_meta = tf.Print(converted_meta,[converted_meta],"converted_meta:",summarize=100)
+            return converted_meta
+        else:
+            return []
 
     with tf.name_scope("encode_images"):
         display_fetches = {
@@ -627,7 +687,8 @@ def main():
         tf.summary.tensor_summary("meta", meta)
 
     with tf.name_scope("targets_summary"):
-        tf.summary.tensor_summary("targets", targets)
+        if targets is not None:
+            tf.summary.tensor_summary("targets", targets)
 
     with tf.name_scope("outputs_summary"):
         tf.summary.tensor_summary("outputs", outputs)
@@ -635,13 +696,16 @@ def main():
     with tf.name_scope("next_commands"):
         tf.summary.tensor_summary("next_commands", next_commands)
 
-    tf.summary.scalar("generator_loss_L1", model.gen_loss_L1)
+    with tf.name_scope("generator_loss_L1"):
+        if model.gen_loss is not None:
+            tf.summary.scalar("generator_loss", model.gen_loss)
 
     for var in tf.trainable_variables():
         tf.summary.histogram(var.op.name + "/values", var)
 
-    for grad, var in model.gen_grads_and_vars:
-        tf.summary.histogram(var.op.name + "/gradients", grad)
+    if model.gen_grads_and_vars is not None:
+        for grad, var in model.gen_grads_and_vars:
+            tf.summary.histogram(var.op.name + "/gradients", grad)
 
     with tf.name_scope("parameter_count"):
         parameter_count = tf.reduce_sum([tf.reduce_prod(tf.shape(v)) for v in tf.trainable_variables()])
@@ -698,7 +762,7 @@ def main():
                 }
 
                 if should(a.progress_freq):
-                    fetches["gen_loss_L1"] = model.gen_loss_L1
+                    fetches["gen_loss"] = model.gen_loss
 
                 if should(a.summary_freq):
                     fetches["summary"] = sv.summary_op
@@ -728,7 +792,7 @@ def main():
                     rate = (step + 1) * a.batch_size / (time.time() - start)
                     remaining = (max_steps - step) * a.batch_size / rate
                     print("progress  epoch %d  step %d  image/sec %0.1f  remaining %dm" % (train_epoch, train_step, rate, remaining / 60))
-                    print("gen_loss_L1", results["gen_loss_L1"])
+                    print("gen_loss", results["gen_loss"])
 
                 if should(a.save_freq):
                     print("saving model")
