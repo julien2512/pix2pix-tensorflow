@@ -249,6 +249,7 @@ def load_examples():
         meta_input = split(meta_contents)
 
     target_paths = glob.glob(os.path.join(a.input_dir, "*.meta_targets"))
+#    print(target_paths)
     if len(target_paths) == 0:
         target_input = None
     else:
@@ -259,11 +260,10 @@ def load_examples():
 
         with tf.name_scope("load_targets"):
             targets_path_queue = tf.train.string_input_producer(target_paths)
-            targets_path_queue.dequeue() # this is why we need len(input_paths)+1 meta paths 
             targets_reader = tf.WholeFileReader()
             target_paths, target_contents = targets_reader.read(targets_path_queue)
-#        target_contents = tf.Print(target_contents, [target_contents], "target_contents:", summarize=100)
-            target_input = split(target_contents) 
+            target_contents = tf.Print(target_contents, [target_contents], "target_contents:", summarize=100)
+            target_input = split(target_contents)
 
 #    meta_input = tf.Print(meta_input, [meta_input], "load meta_input:",summarize=100)
 #    if target_input is not None:
@@ -663,7 +663,7 @@ def main():
         if meta_to_convert is not None:
             converted_meta = tf.to_int32(meta_to_convert)
             converted_meta = tf.as_string(converted_meta)
-            converted_meta = tf.reduce_join(converted_meta,1,separator=' ')
+            converted_meta = tf.reduce_join(converted_meta,1,separator='\t')
 #            converted_meta = tf.Print(converted_meta,[converted_meta],"converted_meta:",summarize=100)
             return converted_meta
         else:
@@ -794,7 +794,7 @@ def main():
                     print("progress  epoch %d  step %d  image/sec %0.1f  remaining %dm" % (train_epoch, train_step, rate, remaining / 60))
                     print("gen_loss", results["gen_loss"])
 
-                if should(a.save_freq):
+                if should(a.save_freq) and not examples.targets is None:
                     print("saving model")
                     saver.save(sess, os.path.join(a.output_dir, "model"), global_step=sv.global_step)
 
