@@ -262,7 +262,7 @@ def load_examples():
             targets_path_queue = tf.train.string_input_producer(target_paths)
             targets_reader = tf.WholeFileReader()
             target_paths, target_contents = targets_reader.read(targets_path_queue)
-            target_contents = tf.Print(target_contents, [target_contents], "target_contents:", summarize=100)
+#            target_contents = tf.Print(target_contents, [target_contents], "target_contents:", summarize=100)
             target_input = split(target_contents)
 
 #    meta_input = tf.Print(meta_input, [meta_input], "load meta_input:",summarize=100)
@@ -437,7 +437,7 @@ def create_model(inputs, meta, targets):
     with tf.name_scope("generator_loss"):
         # abs(targets - outputs) => 0
 #        targets = tf.Print(targets,[targets],"targets:",summarize=100)
-        gen_loss_L1 = tf.reduce_mean(tf.abs(targets - next_bet))
+        gen_loss_L1 = tf.reduce_mean(tf.abs(targets[:,0:2] - next_bet[:,0:2])) # thirds only
 #        gen_loss_L1 = tf.Print(gen_loss_L1,[gen_loss_L1],"gen_loss_L1:")
 
         magic_target = get_magic_target(targets,next_bet)
