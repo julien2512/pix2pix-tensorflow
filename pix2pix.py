@@ -45,9 +45,9 @@ parser.add_argument("--beta1", type=float, default=0.5, help="momentum term of a
 parser.add_argument("--f1", type=int, default=20, help="number of full layer to get the situation")
 parser.add_argument("--f2", type=int, default=20, help="number of full layer to get the next bet")
 parser.add_argument("--frames", type=int, default=10, help="number of frames for each to generate commands")
-parser.add_argument("--command_fire_level", type=float, default=0.001, help="level at which a command is fired")
-parser.add_argument("--magic_weight", type=float, default=0.08, help="weight of magic formula over L1 loss")
-parser.add_argument("--l1_weight", type=float, default=0.02, help="weight of L1 loss")
+parser.add_argument("--command_fire_level", type=float, default=0.003, help="level at which a command is fired")
+parser.add_argument("--magic_weight", type=float, default=0.01, help="weight of magic formula over L1 loss")
+parser.add_argument("--l1_weight", type=float, default=0.09, help="weight of L1 loss")
 
 a = parser.parse_args()
 
