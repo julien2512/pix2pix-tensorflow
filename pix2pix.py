@@ -44,7 +44,7 @@ parser.add_argument("--beta1", type=float, default=0.5, help="momentum term of a
 
 parser.add_argument("--f1", type=int, default=20, help="number of full layer to get the situation")
 parser.add_argument("--f2", type=int, default=20, help="number of full layer to get the next bet")
-parser.add_argument("--frames", type=int, default=10, help="number of frames for each to generate commands")
+parser.add_argument("--frames", type=int, default=5, help="number of frames for each to generate commands")
 parser.add_argument("--command_fire_level", type=float, default=0.003, help="level at which a command is fired")
 parser.add_argument("--magic_weight", type=float, default=0.01, help="weight of magic formula over L1 loss")
 parser.add_argument("--l1_weight", type=float, default=0.09, help="weight of L1 loss")
@@ -287,7 +287,8 @@ def load_examples():
     )
 
 
-def create_generator(generator_inputs, meta_inputs):
+#def create_generator(generator_inputs, meta_inputs):
+def create_generator(generator_inputs):
     layers = []
 
 #    generator_inputs = tf.Print(generator_inputs,[generator_inputs],"generator_inputs:",summarize=256)
@@ -393,60 +394,61 @@ def create_generator(generator_inputs, meta_inputs):
 #
 # this magic formula aims to 
 # optimize p1_life & p2_life by time
-# but not to perfect, 
+# but not too perfect, 
 # and considering actual performances !
-def get_magic_target(current, bet):
+def get_magic_target(actual, bet):
 
-    p1_life = bet[:,0:1]     # ex:  104
-    p2_life = bet[:,1:2]     # ex:  176
-    time    = current[:,2:3] # ex:  107
+    p1_life = bet[:,0:1]           # ex:  104/176   196/176
+    p2_life = bet[:,1:2]           # ex:  176/176   655/176
+    actual_time    = actual[:,2:3] # ex:  107/147   130/147
+    actual_p1_life = actual[:,0:1] # ex:             26/176
+    actual_p2_life = actual[:,1:2] # ex:  90/176    176/176
 #    time = tf.Print(time,[time],"time:")
 
-    max_kill_time = tf.fill([a.batch_size,1],150.0)
-    max_time = tf.fill([a.batch_size,1],200.0)
-    max_life = max_time
+    max_kill_time = tf.fill([a.batch_size,1],100.0)
+    max_time = tf.fill([a.batch_size,1],147.0)
+    max_life = tf.fill([a.batch_size,1],176.0)
 
-#    magic_p2_life = tf.subtract(max_kill_time,time)
-    magic_p2_life = time
-    magic_p2_life = tf.multiply(magic_p2_life,max_life)
-    magic_p2_life = tf.divide(magic_p2_life, max_kill_time)
-    magic_p2_life = tf.minimum(p2_life,magic_p2_life)
+    magic_p2_life = actual_time                              # 107                  130
+    magic_p2_life = tf.multiply(magic_p2_life,max_life)      # 107*176 = 18832      130*176 = 22880
+    magic_p2_life = tf.divide(magic_p2_life, max_time)       # 18832 / 147 = 128    22880 / 147 = 155
+    magic_p2_life = tf.minimum(actual_p2_life,magic_p2_life) # min(90,176) = 90     min(176,155) = 155
     
-#    magic_p1_life = tf.subtract(max_time,time)
-    magic_p1_life = time
-    magic_p1_life = tf.multiply(magic_p1_life,max_life)
-    magic_p1_life = tf.divide(magic_p1_life, max_time)
-    magic_p1_life = tf.minimum(max_life,tf.maximum(p1_life,magic_p1_life))
+    magic_p1_life = actual_time                                # 107                  130
+    magic_p1_life = tf.multiply(magic_p1_life,max_life)        # 107*176 = 18832      130*176 = 22880
+    magic_p1_life = tf.divide(magic_p1_life, max_time)         # 18832 / 147 = 128    22880 / 147 = 155
+    magic_p1_life = tf.minimum(max_life,tf.maximum(actual_p1_life,magic_p1_life)) # min(176,max(104,128)) = 128  min(176,max(26,155)) = 155
 
-    magic_bet = tf.concat((magic_p1_life,magic_p2_life,time,tf.fill([a.batch_size,12-3],0.0)),axis=1)
+    magic_bet = tf.concat((magic_p1_life,magic_p2_life,actual_time,tf.fill([a.batch_size,12-3],0.0)),axis=1)
 
     return magic_bet
 
 def create_model(inputs, meta, targets):
     with tf.variable_scope("generator") as scope:
-        outputs = create_generator(inputs, meta)
+        outputs = create_generator(inputs)
+#        outputs = create_generator(inputs, meta)  # cheating
 #        outputs = tf.Print(outputs,[outputs],"outputs full:",summarize=100)
         next_commands = outputs[:,1:(a.frames+1)]
         next_bet = tf.reshape(outputs[:,0:1],[a.batch_size,12])
 #        next_commands = tf.Print(next_commands,[next_commands],"next_commands:",summarize=100)
-#        next_bet = tf.Print(next_bet,[next_bet],"next_bet:",summarize=100)
+        next_bet = tf.Print(next_bet,[next_bet],"next_bet:",summarize=100)
 
     if targets is None:
         targets = next_bet # without targets, no change on model
 
     with tf.name_scope("generator_loss"):
         # abs(targets - outputs) => 0
-#        targets = tf.Print(targets,[targets],"targets:",summarize=100)
+        targets = tf.Print(targets,[targets],"targets:",summarize=100)
         gen_loss_L1 = tf.reduce_mean(tf.abs(targets[:,0:2] - next_bet[:,0:2])) # thirds only
-#        gen_loss_L1 = tf.Print(gen_loss_L1,[gen_loss_L1],"gen_loss_L1:")
+        gen_loss_L1 = tf.Print(gen_loss_L1,[gen_loss_L1],"gen_loss_L1:")
 
         magic_target = get_magic_target(targets,next_bet)
-#        magic_target = tf.Print(magic_target,[magic_target],"magic_target:",summarize=100)
-        magic_loss = tf.reduce_mean(tf.abs(magic_target - next_bet))
-#        magic_loss  = tf.Print(magic_loss, [magic_loss], "magic_loss:")
+        magic_target = tf.Print(magic_target,[magic_target],"magic_target:",summarize=100)
+        magic_loss = tf.reduce_mean(tf.abs(magic_target[:,0:2] - next_bet[:,0:2]))
+        magic_loss  = tf.Print(magic_loss, [magic_loss], "magic_loss:")
 
         gen_loss = tf.add(tf.scalar_mul(a.l1_weight,gen_loss_L1), tf.scalar_mul(a.magic_weight,magic_loss))
-#        gen_loss = tf.Print(gen_loss,[gen_loss],"gen_loss:")
+        gen_loss = tf.Print(gen_loss,[gen_loss],"gen_loss:")
 
     with tf.name_scope("generator_train"):
         gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
@@ -454,14 +456,15 @@ def create_model(inputs, meta, targets):
         gen_grads_and_vars = gen_optim.compute_gradients(gen_loss, var_list=gen_tvars)
         gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
 
-    ema = tf.train.ExponentialMovingAverage(decay=0.99)
-    update_losses = ema.apply([gen_loss])
+#    ema = tf.train.ExponentialMovingAverage(decay=0.99)
+#    update_losses = ema.apply([gen_loss])
 
     global_step = tf.contrib.framework.get_or_create_global_step()
     incr_global_step = tf.assign(global_step, global_step+1)
 
-    gen_loss = ema.average(gen_loss)
-    train = tf.group(update_losses, incr_global_step, gen_train)
+#    gen_loss = ema.average(gen_loss)
+#    train = tf.group(update_losses, incr_global_step, gen_train)
+    train = tf.group(incr_global_step, gen_train)
 
     return Model(
         gen_loss=gen_loss,
@@ -696,7 +699,7 @@ def main():
     with tf.name_scope("next_commands"):
         tf.summary.tensor_summary("next_commands", next_commands)
 
-    with tf.name_scope("generator_loss_L1"):
+    with tf.name_scope("generator_loss"):
         if model.gen_loss is not None:
             tf.summary.scalar("generator_loss", model.gen_loss)
 
