@@ -46,8 +46,9 @@ parser.add_argument("--f1", type=int, default=20, help="number of full layer to 
 parser.add_argument("--f2", type=int, default=20, help="number of full layer to get the next bet")
 parser.add_argument("--frames", type=int, default=5, help="number of frames for each to generate commands")
 parser.add_argument("--command_fire_level", type=float, default=0.003, help="level at which a command is fired")
-parser.add_argument("--magic_weight", type=float, default=0.01, help="weight of magic formula over L1 loss")
-parser.add_argument("--l1_weight", type=float, default=0.09, help="weight of L1 loss")
+parser.add_argument("--magic_weight", type=float, default=0.009, help="weight of magic formula over L1 loss") # 0.009
+parser.add_argument("--l1_weight", type=float, default=0.001, help="weight of L1 loss")  # 0.001
+parser.add_argument("--perf_weight", type=float, default=0.01, help="weight of perf loss")
 
 a = parser.parse_args()
 
@@ -394,8 +395,6 @@ def create_generator(generator_inputs):
 #
 # this magic formula aims to 
 # optimize p1_life & p2_life by time
-# but not too perfect, 
-# and considering actual performances !
 def get_magic_target(actual, bet):
 
     p1_life = bet[:,0:1]           # ex:  104/176   196/176
@@ -423,6 +422,35 @@ def get_magic_target(actual, bet):
 
     return magic_bet
 
+# how good Ryu is
+def get_performance(last, actual, bet):
+
+    last_p1_life = tf.reshape(last[0][0:1],[])
+    last_p2_life = tf.reshape(last[0][1:2],[])
+    p1_life = tf.reshape(actual[0][0:1],[])           # ex:  104/176   196/176
+    p2_life = tf.reshape(actual[0][1:2],[])           # ex:  176/176   655/176
+    actual_time    = tf.reshape(actual[0][2:3],[]) # ex:  107/147   130/147
+    magic_bet = get_magic_target(actual, bet)
+    magic_p1_life = tf.reshape(magic_bet[0][0:1],[])
+    magic_p2_life = tf.reshape(magic_bet[0][1:2],[])
+
+    zero = tf.constant(0.0)
+    zerol = lambda: zero
+    defaut = tf.maximum(zero,tf.reduce_mean(tf.abs(magic_bet[:,0:2]-actual[:,0:2])))
+    defaut = tf.Print(defaut,[defaut],"perf_loss:")
+    defautl = lambda: defaut
+
+# Ryu hits Zangief => good
+# Ryu has hit Zangief enough => good
+# Ryu was not hit too much => good
+# otherwise, reduce_mean
+    perf = tf.case([( tf.greater(last_p2_life, p2_life) , zerol ),  
+                    ( tf.greater(magic_p2_life, p2_life), zerol ),  
+                    ( tf.greater(p1_life, magic_p1_life), zerol ),] ,
+                   default=defautl ) 
+
+    return perf
+
 def create_model(inputs, meta, targets):
     with tf.variable_scope("generator") as scope:
         outputs = create_generator(inputs)
@@ -447,7 +475,13 @@ def create_model(inputs, meta, targets):
         magic_loss = tf.reduce_mean(tf.abs(magic_target[:,0:2] - next_bet[:,0:2]))
         magic_loss  = tf.Print(magic_loss, [magic_loss], "magic_loss:")
 
+        perf_loss = get_performance(meta, targets, next_bet)
+        perf_loss = tf.Print(perf_loss, [perf_loss], "perf_loss:")
+
+        zero = tf.constant(0.0)
+
         gen_loss = tf.add(tf.scalar_mul(a.l1_weight,gen_loss_L1), tf.scalar_mul(a.magic_weight,magic_loss))
+        gen_loss = tf.case([(tf.equal(perf_loss,zero),lambda:tf.scalar_mul(0.0000001,gen_loss))], default=lambda:gen_loss)
         gen_loss = tf.Print(gen_loss,[gen_loss],"gen_loss:")
 
     with tf.name_scope("generator_train"):
@@ -473,7 +507,6 @@ def create_model(inputs, meta, targets):
         next_commands=next_commands,
         train=train,
     )
-
 
 def save_images(fetches, step=None):
     image_dir = os.path.join(a.output_dir, "images")
