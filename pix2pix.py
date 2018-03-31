@@ -42,12 +42,12 @@ parser.set_defaults(flip=True)
 parser.add_argument("--lr", type=float, default=0.0002, help="initial learning rate for adam")
 parser.add_argument("--beta1", type=float, default=0.5, help="momentum term of adam")
 
-parser.add_argument("--f1", type=int, default=20, help="number of full layer to get the situation")
-parser.add_argument("--f2", type=int, default=20, help="number of full layer to get the next bet")
+parser.add_argument("--f1", type=int, default=40, help="number of full layer to get the commands")
+parser.add_argument("--f2", type=int, default=40, help="number of full layer to get the next bet")
 parser.add_argument("--frames", type=int, default=5, help="number of frames for each to generate commands")
 parser.add_argument("--command_fire_level", type=float, default=0.003, help="level at which a command is fired")
-parser.add_argument("--magic_weight", type=float, default=0.009, help="weight of magic formula over L1 loss") # 0.009
-parser.add_argument("--l1_weight", type=float, default=0.001, help="weight of L1 loss")  # 0.001
+parser.add_argument("--magic_weight", type=float, default=0.005, help="weight of magic formula over L1 loss") # 0.009
+parser.add_argument("--l1_weight", type=float, default=0.005, help="weight of L1 loss")  # 0.001
 parser.add_argument("--perf_weight", type=float, default=0.01, help="weight of perf loss")
 
 a = parser.parse_args()
@@ -342,6 +342,7 @@ def create_generator(generator_inputs):
         with tf.variable_scope("f1_fully_connected_%d" % (next_commands_channels)):
             rectified = tf.nn.relu(layers[-1])
             output = commands(rectified, a.ngf*8)
+            output = tf.nn.dropout(output, keep_prob=0.5)
 #            output = tf.Print(output,[output],"output f1_%d" % (next_commands_channels),summarize=100)
             layers.append(output)
 
@@ -371,6 +372,7 @@ def create_generator(generator_inputs):
         with tf.variable_scope("f2_fully_connected_%d" % (next_bet_channels)):
             rectified = tf.nn.relu(layers[-1])
             output = commands(rectified, a.ngf*8+12*a.frames)
+            output = tf.nn.dropout(output, keep_prob=0.5)
 #            output = tf.Print(output,[output],"output f2_%d" % (next_bet_channels), summarize=100)
             layers.append(output)
 
@@ -405,7 +407,7 @@ def get_magic_target(actual, bet):
 #    time = tf.Print(time,[time],"time:")
 
     max_kill_time = tf.fill([a.batch_size,1],100.0)
-    max_time = tf.fill([a.batch_size,1],147.0)
+    max_time = tf.fill([a.batch_size,1],153.0)
     max_life = tf.fill([a.batch_size,1],176.0)
 
     magic_p2_life = actual_time                              # 107                  130
