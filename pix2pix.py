@@ -203,7 +203,7 @@ def load_examples():
 
     # synchronize seed for image operations so that we do the same operations to both
     # input and output images
-    seed = random.randint(0, 2**31 - 1)
+    seed = a.seed
     def transform(image):
         r = image
         if a.flip:
@@ -342,7 +342,7 @@ def create_generator(generator_inputs):
         with tf.variable_scope("f1_fully_connected_%d" % (next_commands_channels)):
             rectified = tf.nn.relu(layers[-1])
             output = commands(rectified, a.ngf*8)
-            output = tf.nn.dropout(output, keep_prob=0.5)
+            output = tf.nn.dropout(output, keep_prob=0.5, seed=a.seed)
 #            output = tf.Print(output,[output],"output f1_%d" % (next_commands_channels),summarize=100)
             layers.append(output)
 
@@ -372,7 +372,7 @@ def create_generator(generator_inputs):
         with tf.variable_scope("f2_fully_connected_%d" % (next_bet_channels)):
             rectified = tf.nn.relu(layers[-1])
             output = commands(rectified, a.ngf*8+12*a.frames)
-            output = tf.nn.dropout(output, keep_prob=0.5)
+            output = tf.nn.dropout(output, keep_prob=0.5, seed=a.seed)
 #            output = tf.Print(output,[output],"output f2_%d" % (next_bet_channels), summarize=100)
             layers.append(output)
 
