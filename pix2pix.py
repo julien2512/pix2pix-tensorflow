@@ -342,7 +342,8 @@ def create_generator(generator_inputs):
         with tf.variable_scope("f1_fully_connected_%d" % (next_commands_channels)):
             rectified = tf.nn.relu(layers[-1])
             output = commands(rectified, a.ngf*8)
-            output = tf.nn.dropout(output, keep_prob=0.5, seed=a.seed)
+            if next_commands_channels<a.f1-5:
+                 output = tf.nn.dropout(output, keep_prob=0.5, seed=a.seed)
 #            output = tf.Print(output,[output],"output f1_%d" % (next_commands_channels),summarize=100)
             layers.append(output)
 
@@ -372,7 +373,8 @@ def create_generator(generator_inputs):
         with tf.variable_scope("f2_fully_connected_%d" % (next_bet_channels)):
             rectified = tf.nn.relu(layers[-1])
             output = commands(rectified, a.ngf*8+12*a.frames)
-            output = tf.nn.dropout(output, keep_prob=0.5, seed=a.seed)
+            if next_bet_channels<a.f2-5:
+                 output = tf.nn.dropout(output, keep_prob=0.5, seed=a.seed)
 #            output = tf.Print(output,[output],"output f2_%d" % (next_bet_channels), summarize=100)
             layers.append(output)
 
@@ -381,7 +383,7 @@ def create_generator(generator_inputs):
         rectified = tf.nn.relu(layers[-1])
         output = commands(rectified, 12)
         output = tf.abs(output)
-        output = tf.scalar_mul(100000,output)
+        output = tf.scalar_mul(1000,output) # 1000 is totally arbitrary
 #        output = tf.Print(output,[output],"output next_bet", summarize=100)
         next_bet = output
         layers.append(output)
