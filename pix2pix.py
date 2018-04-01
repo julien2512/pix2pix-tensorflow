@@ -49,6 +49,7 @@ parser.add_argument("--command_fire_level", type=float, default=0.003, help="lev
 parser.add_argument("--magic_weight", type=float, default=0.005, help="weight of magic formula over L1 loss") # 0.009
 parser.add_argument("--l1_weight", type=float, default=0.005, help="weight of L1 loss")  # 0.001
 parser.add_argument("--perf_weight", type=float, default=0.01, help="weight of perf loss")
+parser.add_argument("--nodrop", type=bool, default=True, help="Desactivate the drop layer")
 
 a = parser.parse_args()
 
@@ -342,7 +343,7 @@ def create_generator(generator_inputs):
         with tf.variable_scope("f1_fully_connected_%d" % (next_commands_channels)):
             rectified = tf.nn.relu(layers[-1])
             output = commands(rectified, a.ngf*8)
-            if next_commands_channels<a.f1-5:
+            if not a.nodrop and next_commands_channels<a.f1-5:
                  output = tf.nn.dropout(output, keep_prob=0.5, seed=a.seed)
 #            output = tf.Print(output,[output],"output f1_%d" % (next_commands_channels),summarize=100)
             layers.append(output)
@@ -373,7 +374,7 @@ def create_generator(generator_inputs):
         with tf.variable_scope("f2_fully_connected_%d" % (next_bet_channels)):
             rectified = tf.nn.relu(layers[-1])
             output = commands(rectified, a.ngf*8+12*a.frames)
-            if next_bet_channels<a.f2-5:
+            if not a.nodrop and next_bet_channels<a.f2-5:
                  output = tf.nn.dropout(output, keep_prob=0.5, seed=a.seed)
 #            output = tf.Print(output,[output],"output f2_%d" % (next_bet_channels), summarize=100)
             layers.append(output)
@@ -698,6 +699,7 @@ def main():
 
     with tf.name_scope("convert_outputs"):
         converted_next_commands = convert_commands(next_commands)
+        converted_next_commands = tf.Print(converted_next_commands,[converted_next_commands],"next_commands:",summarize=100)
 
     def convert_meta(meta_to_convert):
         if meta_to_convert is not None:
