@@ -106,12 +106,15 @@ def conv(batch_input, out_channels, stride):
         conv = tf.nn.conv2d(padded_input, filter, [1, stride, stride, 1], padding="VALID")
         return conv
 
+def situation(input,situation_size):
+    with tf.variable_scope("situation"):
+        situation = tf.layers.dense(input,situation_size,activation=tf.nn.sigmoid)
+        return situation
 
 def commands(input, out_channels):
     with tf.variable_scope("commands"):
         commands = tf.layers.dense(input,out_channels); 
         return commands
-
 
 def lrelu(x, a):
     with tf.name_scope("lrelu"):
@@ -290,6 +293,7 @@ def load_examples():
 
 
 #def create_generator(generator_inputs, meta_inputs):
+# image => situation
 def create_generator(generator_inputs):
     layers = []
 
@@ -310,7 +314,6 @@ def create_generator(generator_inputs):
         a.ngf * 8, # encoder_6: [batch, 8, 8, ngf * 8] => [batch, 4, 4, ngf * 8]
         a.ngf * 8, # encoder_7: [batch, 4, 4, ngf * 8] => [batch, 2, 2, ngf * 8]
 #        a.ngf * 8, # encoder_8: [batch, 2, 2, ngf * 8] => [batch, 1, 1, ngf * 8]
-# do not know why encode 8 is fully 0. skip it.
     ]
 
     for out_channels in layer_specs:
@@ -322,6 +325,9 @@ def create_generator(generator_inputs):
 #            output = tf.Print(output,[output],"output encoder_%d" % (len(layers)+1),summarize=100)
             layers.append(output)
 
+#    with tf.variable_scope("situation"):
+#        situation = situation(layers[-1], situation_size)
+
     # the last layer to get the situation analysis
     # aims to reduce the shape because of the encode 8 zero bug
     with tf.variable_scope("situation_analysis"):
@@ -329,6 +335,7 @@ def create_generator(generator_inputs):
         rectified = tf.nn.relu(layers[-1])
         output = tf.reshape(output,[a.batch_size,2*2*a.ngf*8])
         output = commands(output, 2*a.ngf*4)
+        output = tf.Print(output,[output],"situation_analysis",summarize=1000)
         layers.append(output)
         situation_analysis = output
     # to train computer to cheat is not allowed
@@ -356,7 +363,7 @@ def create_generator(generator_inputs):
         output = commands(output, 12*a.frames) # 10 sets of 12 commands
         output = tf.reshape(output, [a.batch_size,a.frames,12])
         output = tf.abs(tf.tanh(output)); # probability values for the commands, integers later for the bets
-#        output = tf.Print(output,[output],"output next_commands",summarize=100)
+        output = tf.Print(output,[output],"output next_commands",summarize=100)
         next_commands = output
         layers.append(output)
 
@@ -475,21 +482,35 @@ def create_model(inputs, meta, targets):
         gen_loss_L1 = tf.reduce_mean(tf.abs(targets[:,0:2] - next_bet[:,0:2])) # back to thirds only
         gen_loss_L1 = tf.Print(gen_loss_L1,[gen_loss_L1],"gen_loss_L1:")
 
-        magic_target = get_magic_target(targets,next_bet)
-        magic_target = tf.Print(magic_target,[magic_target],"magic_target:",summarize=100)
-        magic_loss = tf.reduce_mean(tf.abs(magic_target[:,0:2] - next_bet[:,0:2]))
-        magic_loss  = tf.Print(magic_loss, [magic_loss], "magic_loss:")
-
+    with tf.name_scope("perf"):
         perf_loss = get_performance(meta, targets, next_bet)
         perf_loss = tf.Print(perf_loss, [perf_loss], "perf_loss:")
 
+    with tf.name_scope("magic"):
         zero = tf.constant(0.0)
 
-        gen_loss = tf.add(tf.scalar_mul(a.l1_weight,gen_loss_L1), tf.scalar_mul(a.magic_weight,magic_loss))
+        magic_target = get_magic_target(targets,next_bet)
+        magic_target = tf.Print(magic_target,[magic_target],"magic_target:",summarize=100)
+        magic_loss = tf.reduce_mean(tf.abs(magic_target[:,0:2] - next_bet[:,0:2]))
+        magic_loss = tf.scalar_mul(a.magic_weight, magic_loss)
+        magic_loss = tf.case([(tf.equal(perf_loss, zero), lambda:tf.scalar_mul(0.0000001,magic_loss))], default=lambda:magic_loss)
+        magic_loss  = tf.Print(magic_loss, [magic_loss], "magic_loss:")
+
+    with tf.name_scope("gen_loss"):
+        zero = tf.constant(0.0)
+
+        gen_loss = tf.scalar_mul(a.l1_weight,gen_loss_L1)
         gen_loss = tf.case([(tf.equal(perf_loss,zero),lambda:tf.scalar_mul(0.0000001,gen_loss))], default=lambda:gen_loss)
         gen_loss = tf.Print(gen_loss,[gen_loss],"gen_loss:")
 
+    with tf.name_scope("magic_train"):
+        magic_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
+        magic_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+        magic_grads_and_vars = magic_optim.compute_gradients(magic_loss, var_list=magic_tvars)
+        magic_train = magic_optim.apply_gradients(magic_grads_and_vars)
+
     with tf.name_scope("generator_train"):
+      with tf.control_dependencies([magic_train]):
         gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
         gen_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
         gen_grads_and_vars = gen_optim.compute_gradients(gen_loss, var_list=gen_tvars)
