@@ -28,14 +28,14 @@ parser.add_argument("--progress_freq", type=int, default=50, help="display progr
 parser.add_argument("--trace_freq", type=int, default=0, help="trace execution every trace_freq steps")
 parser.add_argument("--display_freq", type=int, default=0, help="write current training images every display_freq steps")
 parser.add_argument("--save_freq", type=int, default=5000, help="save model every save_freq steps, 0 to disable")
-
+parser.add_argument("--separable_conv", action="store_true", help="use separable convolutions in the generator")
 parser.add_argument("--aspect_ratio", type=float, default=1.0, help="aspect ratio of output images (width/height)")
 parser.add_argument("--lab_colorization", action="store_true", help="split input image into brightness (A) and color (B)")
 parser.add_argument("--batch_size", type=int, default=1, help="number of images in batch")
 parser.add_argument("--which_direction", type=str, default="AtoB", choices=["AtoB", "BtoA"])
 parser.add_argument("--ngf", type=int, default=64, help="number of generator filters in first conv layer")
 parser.add_argument("--ndf", type=int, default=64, help="number of discriminator filters in first conv layer")
-parser.add_argument("--scale_size", type=int, default=286, help="scale images to this size before cropping to 256x256")
+parser.add_argument("--scale_size", type=int, default=256, help="scale images to this size before cropping to 256x256")
 parser.add_argument("--flip", dest="flip", action="store_true", help="flip images horizontally")
 parser.add_argument("--no_flip", dest="flip", action="store_false", help="don't flip images horizontally")
 parser.set_defaults(flip=True)
@@ -95,16 +95,24 @@ def augment(image, brightness):
     rgb = lab_to_rgb(lab)
     return rgb
 
+def gen_conv(batch_input, out_channels):
+    # [batch, in_height, in_width, in_channels] => [batch, out_height, out_width, out_channels]
+    initializer = tf.random_normal_initializer(0, 0.02)
+    if a.separable_conv:
+        return tf.layers.separable_conv2d(batch_input, out_channels, kernel_size=4, strides=(2, 2), padding="same", depthwise_initializer=initializer, pointwise_initializer=initializer)
+    else:
+        return tf.layers.conv2d(batch_input, out_channels, kernel_size=4, strides=(2, 2), padding="same", kernel_initializer=initializer)
 
-def conv(batch_input, out_channels, stride):
-    with tf.variable_scope("conv"):
-        in_channels = batch_input.get_shape()[3]
-        filter = tf.get_variable("filter", [4, 4, in_channels, out_channels], dtype=tf.float32, initializer=tf.random_normal_initializer(0, 0.02))
-        # [batch, in_height, in_width, in_channels], [filter_width, filter_height, in_channels, out_channels]
-        #     => [batch, out_height, out_width, out_channels]
-        padded_input = tf.pad(batch_input, [[0, 0], [1, 1], [1, 1], [0, 0]], mode="CONSTANT")
-        conv = tf.nn.conv2d(padded_input, filter, [1, stride, stride, 1], padding="VALID")
-        return conv
+
+#def conv(batch_input, out_channels, stride):
+#    with tf.variable_scope("conv"):
+#        in_channels = batch_input.get_shape()[3]
+#        filter = tf.get_variable("filter", [4, 4, in_channels, out_channels], dtype=tf.float32, initializer=tf.random_normal_initializer(0, 0.02))
+#        # [batch, in_height, in_width, in_channels], [filter_width, filter_height, in_channels, out_channels]
+#        #     => [batch, out_height, out_width, out_channels]
+#        padded_input = tf.pad(batch_input, [[0, 0], [1, 1], [1, 1], [0, 0]], mode="CONSTANT")
+#        conv = tf.nn.conv2d(padded_input, filter, [1, stride, stride, 1], padding="VALID")
+#        return conv
 
 
 def commands(input, out_channels):
@@ -125,18 +133,26 @@ def lrelu(x, a):
         return (0.5 * (1 + a)) * x + (0.5 * (1 - a)) * tf.abs(x)
 
 
-def batchnorm(input):
-    with tf.variable_scope("batchnorm"):
-        # this block looks like it has 3 inputs on the graph unless we do this
-        input = tf.identity(input)
+def batchnorm(inputs):
+    return tf.layers.batch_normalization(inputs, axis=3, epsilon=1e-5, momentum=0.1, training=True, gamma_initializer=tf.random_normal_initializer(1.0, 0.02))
 
-        channels = input.get_shape()[3]
-        offset = tf.get_variable("offset", [channels], dtype=tf.float32, initializer=tf.zeros_initializer())
-        scale = tf.get_variable("scale", [channels], dtype=tf.float32, initializer=tf.random_normal_initializer(1.0, 0.02))
-        mean, variance = tf.nn.moments(input, axes=[0, 1, 2], keep_dims=False)
-        variance_epsilon = 1e-5
-        normalized = tf.nn.batch_normalization(input, mean, variance, offset, scale, variance_epsilon=variance_epsilon)
-        return normalized
+
+#def batchnorm(input):
+#    with tf.variable_scope("batchnorm"):
+#        # this block looks like it has 3 inputs on the graph unless we do this
+#        input = tf.identity(input)
+
+#        channels = input.get_shape()[3]
+#        offset = tf.get_variable("offset", [channels], dtype=tf.float32, initializer=tf.zeros_initializer())
+#        offset = tf.Print(offset,[offset],"offset:")
+#        scale = tf.get_variable("scale", [channels], dtype=tf.float32, initializer=tf.random_normal_initializer(1.0, 0.02))
+#        scale = tf.Print(scale,[scale],"scale:")
+#        mean, variance = tf.nn.moments(input, axes=[0, 1, 2], keep_dims=False)
+#        mean = tf.Print(mean,[mean],"mean:")
+#        variance = tf.Print(variance,[variance],"variance:")
+#        variance_epsilon = 1e-5
+#        normalized = tf.nn.batch_normalization(input, mean, variance, offset, scale, variance_epsilon=variance_epsilon)
+#        return normalized
 
 
 def deconv(batch_input, out_channels):
@@ -297,10 +313,11 @@ def create_generator(generator_inputs):
 
     # encoder_1: [batch, 256, 256, in_channels] => [batch, 128, 128, ngf]
     with tf.variable_scope("encoder_1"):
-        output = lrelu(generator_inputs, 0.2)
-        output = conv(output, a.ngf, stride=2)
+#        output = lrelu(generator_inputs, 0.2)
+#        output = conv(generator_inputs, a.ngf, stride=2)
+         output = gen_conv(generator_inputs, a.ngf)
 #        output = tf.Print(output,[output],"output encoder_1",summarize=100)
-        layers.append(output)
+         layers.append(output)
 
     layer_specs = [
         a.ngf * 2, # encoder_2: [batch, 128, 128, ngf] => [batch, 64, 64, ngf * 2]
@@ -309,25 +326,30 @@ def create_generator(generator_inputs):
         a.ngf * 8, # encoder_5: [batch, 16, 16, ngf * 8] => [batch, 8, 8, ngf * 8]
         a.ngf * 8, # encoder_6: [batch, 8, 8, ngf * 8] => [batch, 4, 4, ngf * 8]
         a.ngf * 8, # encoder_7: [batch, 4, 4, ngf * 8] => [batch, 2, 2, ngf * 8]
-#        a.ngf * 8, # encoder_8: [batch, 2, 2, ngf * 8] => [batch, 1, 1, ngf * 8]
-# do not know why encode 8 is fully 0. skip it.
+        a.ngf * 8, # encoder_8: [batch, 2, 2, ngf * 8] => [batch, 1, 1, ngf * 8]
     ]
 
     for out_channels in layer_specs:
         with tf.variable_scope("encoder_%d" % (len(layers) + 1)):
             rectified = lrelu(layers[-1], 0.2)
+            rectified = tf.Print(rectified,[rectified],"rectified encoder_%d" % (len(layers)+1),summarize=100)
             # [batch, in_height, in_width, in_channels] => [batch, in_height/2, in_width/2, out_channels]
-            convolved = conv(rectified, out_channels, stride=2)
-            output = batchnorm(convolved)
-#            output = tf.Print(output,[output],"output encoder_%d" % (len(layers)+1),summarize=100)
+#            convolved = conv(rectified, out_channels, stride=2)
+            convolved = gen_conv(rectified, out_channels)
+            convolved = tf.Print(convolved,[convolved],"convolved encoder_%d" % (len(layers)+1),summarize=100)
+            if len(layers)+1<8:
+              output = batchnorm(convolved)
+            else:
+              output = convolved
+            output = tf.Print(output,[output],"output encoder_%d" % (len(layers)+1),summarize=100)
             layers.append(output)
 
     # the last layer to get the situation analysis
     # aims to reduce the shape because of the encode 8 zero bug
     with tf.variable_scope("situation_analysis"):
-        # fully_connected: [batch, 2, 2, 8*ngf] => [batch, 2*4*ngf]
+        # fully_connected: [batch, 1, 1, 8*ngf] => [batch, 2*4*ngf]
         rectified = tf.nn.relu(layers[-1])
-        output = tf.reshape(output,[a.batch_size,2*2*a.ngf*8])
+        output = tf.reshape(output,[a.batch_size,a.ngf*8])
         output = commands(output, 2*a.ngf*4)
         layers.append(output)
         situation_analysis = output
