@@ -541,7 +541,7 @@ def get_situation_loss(actual, bet):
     actual = actual[:,0:3]
     bet    = bet[:,0:3]
 
-    return  tf.reduce_mean(actual-bet)
+    return  tf.reduce_mean(actual-bet)/1000
 
 # assume bet[0] = P1 life
 #        bet[1] = P2 life
