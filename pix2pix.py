@@ -57,7 +57,7 @@ EPS = 1e-12
 CROP_SIZE = 256
 
 Examples = collections.namedtuple("Examples", "paths, inputs, meta, targets, count, steps_per_epoch")
-Model = collections.namedtuple("Model", "outputs, gen_loss, gen_grads_and_vars, train, next_commands")
+Model = collections.namedtuple("Model", "outputs, gen_loss, gen_grads_and_vars, situation, train, next_commands")
 
 
 def preprocess(image):
@@ -328,21 +328,20 @@ def create_situation_analysis_generator(generator_inputs):
 
     # the last layer to get the situation analysis
     # aims to reduce the shape because of the encode 8 zero bug
-    with tf.variable_scope("situation_analysis"):
+    with tf.variable_scope("situation"):
         # fully_connected: [batch, 2, 2, 8*ngf] => [batch, 2*4*ngf]
         rectified = tf.nn.relu(layers[-1])
-        output = tf.reshape(output,[a.batch_size,2*2*a.ngf*8])
+        output = tf.reshape(rectified,[a.batch_size,2*2*a.ngf*8])
         output = commands(output, 2*a.ngf*4)
-        output = tf.Print(output,[output],"situation_analysis",summarize=1000)
+        output = tf.Print(output,[output],"situation",summarize=1000)
         layers.append(output)
-        situation_analysis = output
     # to train computer to cheat is not allowed
     # so that meta_inputs is not really necessary in the model
     #    meta_inputs = tf.reshape(meta_inputs,[-1,4])
     #    layers.append(tf.concat(situation_analysis,meta_inputs))
 #        situation_analysis = tf.Print(situation_analysis,[situation_analysis],'situation_analysis:',summarize=100)
 
-    return situation_analysis
+    return layers[-1]
 
 def create_next_commands_generator(situation_analysis):
     layers = []
@@ -363,23 +362,23 @@ def create_next_commands_generator(situation_analysis):
         # fully_connected: [batch, 4 * ngf * 2] => [batch, frames, 12]
         rectified = tf.nn.relu(layers[-1])
         rectified = tf.reshape(rectified, [a.batch_size,4*a.ngf*2])
-        output = commands(output, 12*a.frames) # 10 sets of 12 commands
+        output = commands(rectified, 12*a.frames) # 10 sets of 12 commands
         output = tf.reshape(output, [a.batch_size,a.frames,12])
         output = tf.abs(tf.tanh(output)); # probability values for the commands, integers later for the bets
         output = tf.Print(output,[output],"output next_commands",summarize=100)
-        next_commands = output
         layers.append(output)
 
-    return next_commands
+    return layers[-1]
 
 def create_next_bet_generator(situation_analysis, next_commands):
     layers = []
 
     # commands & situation analysis
     input = tf.concat((tf.reshape(next_commands,[a.batch_size,3*a.frames,4]), tf.reshape(situation_analysis,[a.batch_size,2*a.ngf,4])), axis=1)
+    layers.append(input)
 
     with tf.variable_scope("f2_fully_connected_1"):
-        rectified = tf.nn.relu(input)
+        rectified = tf.nn.relu(layers[-1])
         output = tf.reshape(rectified,[a.batch_size,2*a.ngf*4+12*a.frames])
         output = commands(output, a.ngf*8+12*a.frames)
         layers.append(output)
@@ -401,10 +400,9 @@ def create_next_bet_generator(situation_analysis, next_commands):
         output = tf.abs(output)
         output = tf.scalar_mul(1000,output) # 1000 is totally arbitrary
 #        output = tf.Print(output,[output],"output next_bet", summarize=100)
-        next_bet = output
         layers.append(output)
 
-    return next_bet
+    return layers[-1]
 
     # [batch,12]+[batch,frames,12] => [batch,frames+1,12]
 #    concat = tf.concat((tf.reshape(next_bet,[a.batch_size,1,12]),next_commands),axis=1)
@@ -452,11 +450,10 @@ def create_generator(generator_inputs):
     with tf.variable_scope("situation_analysis"):
         # fully_connected: [batch, 2, 2, 8*ngf] => [batch, 2*4*ngf]
         rectified = tf.nn.relu(layers[-1])
-        output = tf.reshape(output,[a.batch_size,2*2*a.ngf*8])
-        output = commands(output, 2*a.ngf*4)
-        output = tf.Print(output,[output],"situation_analysis",summarize=1000)
-        layers.append(output)
-        situation_analysis = output
+        output = tf.reshape(rectified,[a.batch_size,2*2*a.ngf*8])
+        situation_analysis = commands(output, 2*a.ngf*4)
+        situation_analysis = tf.Print(situation_analysis,[situation_analysis],"situation_analysis",summarize=1000)
+        layers.append(situation_analysis)
     # to train computer to cheat is not allowed
     # so that meta_inputs is not really necessary in the model
     #    meta_inputs = tf.reshape(meta_inputs,[-1,4])
@@ -479,18 +476,19 @@ def create_generator(generator_inputs):
         # fully_connected: [batch, 4 * ngf * 2] => [batch, frames, 12]
         rectified = tf.nn.relu(layers[-1])
         rectified = tf.reshape(rectified, [a.batch_size,4*a.ngf*2])
-        output = commands(output, 12*a.frames) # 10 sets of 12 commands
+        output = commands(rectified, 12*a.frames) # 10 sets of 12 commands
         output = tf.reshape(output, [a.batch_size,a.frames,12])
-        output = tf.abs(tf.tanh(output)); # probability values for the commands, integers later for the bets
-        output = tf.Print(output,[output],"output next_commands",summarize=100)
-        next_commands = output
-        layers.append(output)
+        next_commands = tf.abs(tf.tanh(output)); # probability values for the commands, integers later for the bets
+        next_commands = tf.Print(next_commands,[next_commands],"next_commands",summarize=100)
+        layers.append(next_commands)
 
     # commands & situation analysis
-    input = tf.concat((tf.reshape(next_commands,[a.batch_size,3*a.frames,4]), tf.reshape(situation_analysis,[a.batch_size,2*a.ngf,4])), axis=1)
+    with tf.variable_scope("input"):
+        input = tf.concat((tf.reshape(next_commands,[a.batch_size,3*a.frames,4]), tf.reshape(situation_analysis,[a.batch_size,2*a.ngf,4])), axis=1)
+        layers.append(input)
 
     with tf.variable_scope("f2_fully_connected_1"):
-        rectified = tf.nn.relu(input)
+        rectified = tf.nn.relu(layers[-1])
         output = tf.reshape(rectified,[a.batch_size,2*a.ngf*4+12*a.frames])
         output = commands(output, a.ngf*8+12*a.frames)
         layers.append(output)
@@ -510,15 +508,40 @@ def create_generator(generator_inputs):
         rectified = tf.nn.relu(layers[-1])
         output = commands(rectified, 12)
         output = tf.abs(output)
-        output = tf.scalar_mul(1000,output) # 1000 is totally arbitrary
-#        output = tf.Print(output,[output],"output next_bet", summarize=100)
-        next_bet = output
-        layers.append(output)
+        next_bet = tf.scalar_mul(1000,output) # 1000 is totally arbitrary
+        next_bet = tf.Print(next_bet,[next_bet],"next_bet", summarize=100)
+        layers.append(next_bet)
 
     # [batch,12]+[batch,frames,12] => [batch,frames+1,12]
     concat = tf.concat((tf.reshape(next_bet,[a.batch_size,1,12]),next_commands),axis=1)
+    layers.append(concat)
+
 #    concat = tf.Print(concat,[concat],'generator_concat:',summarize=100)
-    return concat
+    return layers[-1]
+
+# assume bet[0] = P1 life
+#        bet[1] = P2 life
+#        bet[2] = time
+#
+# this magic formula aims to 
+# optimize p1_life & p2_life by time
+def get_situation_loss(actual, bet):
+
+    p1_life = bet[:,0:1]           # ex:  104/176   196/176
+    p2_life = bet[:,1:2]           # ex:  176/176   655/176
+    actual_time    = actual[:,2:3] # ex:  107/147   130/147
+    actual_p1_life = actual[:,0:1] # ex:             26/176
+    actual_p2_life = actual[:,1:2] # ex:  90/176    176/176
+#    time = tf.Print(time,[time],"time:")
+
+    max_kill_time = tf.fill([a.batch_size,1],100.0)
+    max_time = tf.fill([a.batch_size,1],153.0)
+    max_life = tf.fill([a.batch_size,1],176.0)
+
+    actual = actual[:,0:3]
+    bet    = bet[:,0:3]
+
+    return  tf.reduce_mean(actual-bet)
 
 # assume bet[0] = P1 life
 #        bet[1] = P2 life
@@ -583,9 +606,10 @@ def get_performance(last, actual, bet):
     return perf
 
 def create_model(inputs, meta, targets):
-    with tf.variable_scope("generator") as scope:
-
+    with tf.variable_scope("situation_analysis") as scope:
         situation_analysis = create_situation_analysis_generator(inputs)
+
+    with tf.variable_scope("generator") as scope:
         next_commands = create_next_commands_generator(situation_analysis)
         next_bet = create_next_bet_generator(situation_analysis, next_commands)
         next_bet = tf.reshape(next_bet,[a.batch_size,12])
@@ -597,50 +621,72 @@ def create_model(inputs, meta, targets):
         #next_commands = outputs[:,1:(a.frames+1)]
         #next_bet = tf.reshape(outputs[:,0:1],[a.batch_size,12])
 #        next_commands = tf.Print(next_commands,[next_commands],"next_commands:",summarize=100)
-        next_bet = tf.Print(next_bet,[next_bet],"next_bet:",summarize=100)
+        next_bet = tf.Print(next_bet,[next_bet],"next_bet:",summarize=10)
+
+        situation_targets = targets
 
     if targets is None:
         targets = next_bet # without targets, no change on model
+        situation_targets = situation_analysis
 
-    with tf.name_scope("generator_loss"):
+#    with tf.name_scope("generator_loss"):
         # abs(targets - outputs) => 0
-        targets = tf.Print(targets,[targets],"targets:",summarize=100)
-        gen_loss_L1 = tf.reduce_mean(tf.abs(targets[:,0:2] - next_bet[:,0:2])) # back to thirds only
-        gen_loss_L1 = tf.Print(gen_loss_L1,[gen_loss_L1],"gen_loss_L1:")
+#        targets = tf.Print(targets,[targets],"targets:",summarize=100)
+#        gen_loss_L1 = tf.reduce_mean(tf.abs(targets[:,0:2] - next_bet[:,0:2])) # back to thirds only
+#        gen_loss_L1 = tf.Print(gen_loss_L1,[gen_loss_L1],"gen_loss_L1:")
 
     with tf.name_scope("perf"):
         perf_loss = get_performance(meta, targets, next_bet)
         perf_loss = tf.Print(perf_loss, [perf_loss], "perf_loss:")
 
-    with tf.name_scope("magic"):
-        zero = tf.constant(0.0)
+    with tf.name_scope("situation_loss"):
+        situation_targets = tf.Print(situation_targets, [situation_targets], "targets:")
+        situation_loss = get_situation_loss(situation_targets,situation_analysis)
+        situation_loss = tf.reduce_mean(situation_loss)
+#        situation_loss = tf.Print(situation_loss, [situation_loss], "situation_loss:")
 
-        magic_target = get_magic_target(targets,next_bet)
-        magic_target = tf.Print(magic_target,[magic_target],"magic_target:",summarize=100)
-        magic_loss = tf.reduce_mean(tf.abs(magic_target[:,0:2] - next_bet[:,0:2]))
-        magic_loss = tf.scalar_mul(a.magic_weight, magic_loss)
-        magic_loss = tf.case([(tf.equal(perf_loss, zero), lambda:tf.scalar_mul(0.0000001,magic_loss))], default=lambda:magic_loss)
-        magic_loss  = tf.Print(magic_loss, [magic_loss], "magic_loss:")
+#        zero = tf.constant(0.0)
+#        situation_loss = tf.case([(tf.equal(perf_loss,zero),lambda:tf.scalar_mul(0.0000001,situation_loss))], default=lambda:situation_loss)
+        situation_loss = tf.Print(situation_loss,[situation_loss],"situation_loss:")
 
-    with tf.name_scope("gen_loss"):
-        zero = tf.constant(0.0)
 
-        gen_loss = tf.scalar_mul(a.l1_weight,gen_loss_L1)
-        gen_loss = tf.case([(tf.equal(perf_loss,zero),lambda:tf.scalar_mul(0.0000001,gen_loss))], default=lambda:gen_loss)
-        gen_loss = tf.Print(gen_loss,[gen_loss],"gen_loss:")
 
-    with tf.name_scope("magic_train"):
-        magic_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-        magic_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-        magic_grads_and_vars = magic_optim.compute_gradients(magic_loss, var_list=magic_tvars)
-        magic_train = magic_optim.apply_gradients(magic_grads_and_vars)
+#    with tf.name_scope("magic"):
+#        zero = tf.constant(0.0)
 
-    with tf.name_scope("generator_train"):
-      with tf.control_dependencies([magic_train]):
-        gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-        gen_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-        gen_grads_and_vars = gen_optim.compute_gradients(gen_loss, var_list=gen_tvars)
-        gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
+#        magic_target = get_magic_target(targets,next_bet)
+#        magic_target = tf.Print(magic_target,[magic_target],"magic_target:",summarize=100)
+#        magic_loss = tf.reduce_mean(tf.abs(magic_target[:,0:2] - next_bet[:,0:2]))
+#        magic_loss = tf.scalar_mul(a.magic_weight, magic_loss)
+#        magic_loss = tf.case([(tf.equal(perf_loss, zero), lambda:tf.scalar_mul(0.0000001,magic_loss))], default=lambda:magic_loss)
+#        magic_loss  = tf.Print(magic_loss, [magic_loss], "magic_loss:")
+
+#    with tf.name_scope("gen_loss"):
+#        zero = tf.constant(0.0)
+
+#        gen_loss = tf.scalar_mul(a.l1_weight,gen_loss_L1)
+#        gen_loss = tf.case([(tf.equal(perf_loss,zero),lambda:tf.scalar_mul(0.0000001,gen_loss))], default=lambda:gen_loss)
+#        gen_loss = tf.Print(gen_loss,[gen_loss],"gen_loss:")
+
+    with tf.name_scope("situation_train"):
+        situation_tvars = [var for var in tf.trainable_variables() if var.name.startswith("situation_analysis")]
+        situation_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+        situation_grads_and_vars = situation_optim.compute_gradients(situation_loss, var_list=situation_tvars)
+        situation_train = situation_optim.apply_gradients(situation_grads_and_vars)
+
+#    with tf.name_scope("magic_train"):
+#        magic_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
+#        magic_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+#        magic_grads_and_vars = magic_optim.compute_gradients(magic_loss, var_list=magic_tvars)
+#        magic_train = magic_optim.apply_gradients(magic_grads_and_vars)
+
+#   
+#    with tf.name_scope("generator_train"):
+#      with tf.control_dependencies([magic_train]):
+#        gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
+#        gen_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+#        gen_grads_and_vars = gen_optim.compute_gradients(gen_loss, var_list=gen_tvars)
+#        gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
 
 #    ema = tf.train.ExponentialMovingAverage(decay=0.99)
 #    update_losses = ema.apply([gen_loss])
@@ -650,11 +696,15 @@ def create_model(inputs, meta, targets):
 
 #    gen_loss = ema.average(gen_loss)
 #    train = tf.group(update_losses, incr_global_step, gen_train)
-    train = tf.group(incr_global_step, gen_train)
+#    train = tf.group(incr_global_step, gen_train)
+
+# train situation analysis only
+    train = tf.group(incr_global_step, situation_train)
 
     return Model(
-        gen_loss=gen_loss,
-        gen_grads_and_vars=gen_grads_and_vars,
+        gen_loss=situation_loss,
+        gen_grads_and_vars=situation_grads_and_vars,
+        situation=situation_analysis,
         outputs=next_bet,
         next_commands=next_commands,
         train=train,
@@ -808,6 +858,7 @@ def main():
     inputs = deprocess(examples.inputs)
     meta   = examples.meta
     targets = examples.targets
+    situation = model.situation
     outputs = model.outputs
     next_commands = model.next_commands
 
@@ -878,6 +929,9 @@ def main():
     with tf.name_scope("targets_summary"):
         if targets is not None:
             tf.summary.tensor_summary("targets", targets)
+
+    with tf.name_scope("situation_summary"):
+        tf.summary.tensor_summary("situation", situation)
 
     with tf.name_scope("outputs_summary"):
         tf.summary.tensor_summary("outputs", outputs)
