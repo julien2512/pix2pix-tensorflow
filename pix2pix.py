@@ -527,21 +527,24 @@ def create_generator(generator_inputs):
 # optimize p1_life & p2_life by time
 def get_situation_loss(actual, bet):
 
-    p1_life = bet[:,0:1]           # ex:  104/176   196/176
-    p2_life = bet[:,1:2]           # ex:  176/176   655/176
-    actual_time    = actual[:,2:3] # ex:  107/147   130/147
-    actual_p1_life = actual[:,0:1] # ex:             26/176
-    actual_p2_life = actual[:,1:2] # ex:  90/176    176/176
+#    p1_life = bet[:,0:1]           # ex:  104/176   196/176
+#    p2_life = bet[:,1:2]           # ex:  176/176   655/176
+#    actual_time    = actual[:,2:3] # ex:  107/147   130/147
+#    actual_p1_life = actual[:,0:1] # ex:             26/176
+#    actual_p2_life = actual[:,1:2] # ex:  90/176    176/176
 #    time = tf.Print(time,[time],"time:")
 
-    max_kill_time = tf.fill([a.batch_size,1],100.0)
-    max_time = tf.fill([a.batch_size,1],153.0)
-    max_life = tf.fill([a.batch_size,1],176.0)
+#    max_kill_time = tf.fill([a.batch_size,1],100.0)
+#    max_time = tf.fill([a.batch_size,1],153.0)
+#    max_life = tf.fill([a.batch_size,1],176.0)
 
-    actual = actual[:,0:3]
-    bet    = bet[:,0:3]
+#    actual = actual[:,0:3]
+#    bet    = bet[:,0:3]
 
-    return  tf.reduce_mean(actual-bet)/1000
+    actual = tf.slice(actual,[0,0],[a.batch_size,3])
+    bet    = tf.slice(bet,[0,0],[a.batch_size,3])
+
+    return  tf.abs(actual-bet)
 
 # assume bet[0] = P1 life
 #        bet[1] = P2 life
@@ -635,20 +638,47 @@ def create_model(inputs, meta, targets):
 #        gen_loss_L1 = tf.reduce_mean(tf.abs(targets[:,0:2] - next_bet[:,0:2])) # back to thirds only
 #        gen_loss_L1 = tf.Print(gen_loss_L1,[gen_loss_L1],"gen_loss_L1:")
 
-    with tf.name_scope("perf"):
-        perf_loss = get_performance(meta, targets, next_bet)
-        perf_loss = tf.Print(perf_loss, [perf_loss], "perf_loss:")
+#    with tf.name_scope("perf"):
+#        perf_loss = get_performance(meta, targets, next_bet)
+#        perf_loss = tf.Print(perf_loss, [perf_loss], "perf_loss:")
+
+    with tf.name_scope("situation"):
+        situation_targets = tf.Print(situation_targets, [situation_targets], "targets:")
+        situation = get_situation_loss(situation_targets,situation_analysis)
+
+    with tf.name_scope("p1_life_train"):
+        p1_life_loss = 0.1*tf.reduce_mean(tf.slice(situation,[0,0],[a.batch_size,1]))
+        p1_life_loss = tf.Print(p1_life_loss,[p1_life_loss],"p1_life_loss:")
+        p1_life_tvars = [var for var in tf.trainable_variables() if var.name.startswith("situation")]
+        p1_life_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+        p1_life_grads_and_vars = p1_life_optim.compute_gradients(p1_life_loss, var_list=p1_life_tvars)
+        p1_life_train = p1_life_optim.apply_gradients(p1_life_grads_and_vars)
+
+    with tf.name_scope("p2_life_train"):
+        with tf.control_dependencies([p1_life_train]):
+            p2_life_loss = 0.1*tf.reduce_mean(tf.slice(situation,[0,1],[a.batch_size,1]))
+            p2_life_loss = tf.Print(p2_life_loss,[p2_life_loss],"p2_life_loss:")
+            p2_life_tvars = [var for var in tf.trainable_variables() if var.name.startswith("situation")]
+            p2_life_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+            p2_life_grads_and_vars = p2_life_optim.compute_gradients(p2_life_loss, var_list=p2_life_tvars)
+            p2_life_train = p2_life_optim.apply_gradients(p2_life_grads_and_vars)
+
+    with tf.name_scope("time_train"):
+        with tf.control_dependencies([p1_life_train,p2_life_train]):
+            time_loss = 0.1*tf.reduce_mean(tf.slice(situation,[0,2],[a.batch_size,1]))
+            time_loss = tf.Print(time_loss,[time_loss],"time_loss:")
+            time_tvars = [var for var in tf.trainable_variables() if var.name.startswith("situation")]
+            time_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+            time_grads_and_vars = time_optim.compute_gradients(time_loss, var_list=time_tvars)
+            time_train = time_optim.apply_gradients(time_grads_and_vars)
 
     with tf.name_scope("situation_loss"):
-        situation_targets = tf.Print(situation_targets, [situation_targets], "targets:")
-        situation_loss = get_situation_loss(situation_targets,situation_analysis)
-        situation_loss = tf.reduce_mean(situation_loss)
-#        situation_loss = tf.Print(situation_loss, [situation_loss], "situation_loss:")
+        situation_loss = p1_life_loss + p2_life_loss + time_loss
+        situation_loss = tf.Print(situation_loss, [situation_loss], "situation_loss:")
 
 #        zero = tf.constant(0.0)
 #        situation_loss = tf.case([(tf.equal(perf_loss,zero),lambda:tf.scalar_mul(0.0000001,situation_loss))], default=lambda:situation_loss)
-        situation_loss = tf.Print(situation_loss,[situation_loss],"situation_loss:")
-
+#        situation_loss = tf.Print(situation_loss,[situation_loss],"situation_loss:")
 
 
 #    with tf.name_scope("magic"):
@@ -668,11 +698,11 @@ def create_model(inputs, meta, targets):
 #        gen_loss = tf.case([(tf.equal(perf_loss,zero),lambda:tf.scalar_mul(0.0000001,gen_loss))], default=lambda:gen_loss)
 #        gen_loss = tf.Print(gen_loss,[gen_loss],"gen_loss:")
 
-    with tf.name_scope("situation_train"):
-        situation_tvars = [var for var in tf.trainable_variables() if var.name.startswith("situation_analysis")]
-        situation_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-        situation_grads_and_vars = situation_optim.compute_gradients(situation_loss, var_list=situation_tvars)
-        situation_train = situation_optim.apply_gradients(situation_grads_and_vars)
+#    with tf.name_scope("situation_train"):
+#        situation_tvars = [var for var in tf.trainable_variables() if var.name.startswith("situation_analysis")]
+#        situation_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+#        situation_grads_and_vars = situation_optim.compute_gradients(situation_loss, var_list=situation_tvars)
+#        situation_train = situation_optim.apply_gradients(situation_grads_and_vars)
 
 #    with tf.name_scope("magic_train"):
 #        magic_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
@@ -699,11 +729,11 @@ def create_model(inputs, meta, targets):
 #    train = tf.group(incr_global_step, gen_train)
 
 # train situation analysis only
-    train = tf.group(incr_global_step, situation_train)
+    train = tf.group(incr_global_step, time_train)
 
     return Model(
         gen_loss=situation_loss,
-        gen_grads_and_vars=situation_grads_and_vars,
+        gen_grads_and_vars=time_grads_and_vars,
         situation=situation_analysis,
         outputs=next_bet,
         next_commands=next_commands,
