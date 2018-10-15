@@ -409,115 +409,6 @@ def create_next_bet_generator(situation_analysis, next_commands):
 #    concat = tf.Print(concat,[concat],'generator_concat:',summarize=100)
 #    return concat
 
-#def create_generator(generator_inputs, meta_inputs):
-# image => situation
-def create_generator(generator_inputs):
-    layers = []
-
-#    generator_inputs = tf.Print(generator_inputs,[generator_inputs],"generator_inputs:",summarize=256)
-
-    # encoder_1: [batch, 256, 256, in_channels] => [batch, 128, 128, ngf]
-    with tf.variable_scope("encoder_1"):
-        output = lrelu(generator_inputs, 0.2)
-        output = conv(output, a.ngf, stride=2)
-#        output = tf.Print(output,[output],"output encoder_1",summarize=100)
-        layers.append(output)
-
-    layer_specs = [
-        a.ngf * 2, # encoder_2: [batch, 128, 128, ngf] => [batch, 64, 64, ngf * 2]
-        a.ngf * 4, # encoder_3: [batch, 64, 64, ngf * 2] => [batch, 32, 32, ngf * 4]
-        a.ngf * 8, # encoder_4: [batch, 32, 32, ngf * 4] => [batch, 16, 16, ngf * 8]
-        a.ngf * 8, # encoder_5: [batch, 16, 16, ngf * 8] => [batch, 8, 8, ngf * 8]
-        a.ngf * 8, # encoder_6: [batch, 8, 8, ngf * 8] => [batch, 4, 4, ngf * 8]
-        a.ngf * 8, # encoder_7: [batch, 4, 4, ngf * 8] => [batch, 2, 2, ngf * 8]
-#        a.ngf * 8, # encoder_8: [batch, 2, 2, ngf * 8] => [batch, 1, 1, ngf * 8]
-    ]
-
-    for out_channels in layer_specs:
-        with tf.variable_scope("encoder_%d" % (len(layers) + 1)):
-            rectified = lrelu(layers[-1], 0.2)
-            # [batch, in_height, in_width, in_channels] => [batch, in_height/2, in_width/2, out_channels]
-            convolved = conv(rectified, out_channels, stride=2)
-            output = batchnorm(convolved)
-#            output = tf.Print(output,[output],"output encoder_%d" % (len(layers)+1),summarize=100)
-            layers.append(output)
-
-#    with tf.variable_scope("situation"):
-#        situation = situation(layers[-1], situation_size)
-
-    # the last layer to get the situation analysis
-    # aims to reduce the shape because of the encode 8 zero bug
-    with tf.variable_scope("situation_analysis"):
-        # fully_connected: [batch, 2, 2, 8*ngf] => [batch, 2*4*ngf]
-        rectified = tf.nn.relu(layers[-1])
-        output = tf.reshape(rectified,[a.batch_size,2*2*a.ngf*8])
-        situation_analysis = commands(output, 2*a.ngf*4)
-        situation_analysis = tf.Print(situation_analysis,[situation_analysis],"situation_analysis",summarize=1000)
-        layers.append(situation_analysis)
-    # to train computer to cheat is not allowed
-    # so that meta_inputs is not really necessary in the model
-    #    meta_inputs = tf.reshape(meta_inputs,[-1,4])
-    #    layers.append(tf.concat(situation_analysis,meta_inputs))
-#        situation_analysis = tf.Print(situation_analysis,[situation_analysis],'situation_analysis:',summarize=100)
-
-
-    for next_commands_channels in range(1,a.f1-1):
-        # fully_connected: [batch, 4*ngf*2] => [batch, 4*ngf*2]
-        with tf.variable_scope("f1_fully_connected_%d" % (next_commands_channels)):
-            rectified = tf.nn.relu(layers[-1])
-            output = commands(rectified, a.ngf*8)
-            if not a.nodrop and next_commands_channels<a.f1-5:
-                 output = tf.nn.dropout(output, keep_prob=0.5, seed=a.seed)
-#            output = tf.Print(output,[output],"output f1_%d" % (next_commands_channels),summarize=100)
-            layers.append(output)
-
-
-    with tf.variable_scope("next_commands"):
-        # fully_connected: [batch, 4 * ngf * 2] => [batch, frames, 12]
-        rectified = tf.nn.relu(layers[-1])
-        rectified = tf.reshape(rectified, [a.batch_size,4*a.ngf*2])
-        output = commands(rectified, 12*a.frames) # 10 sets of 12 commands
-        output = tf.reshape(output, [a.batch_size,a.frames,12])
-        next_commands = tf.abs(tf.tanh(output)); # probability values for the commands, integers later for the bets
-        next_commands = tf.Print(next_commands,[next_commands],"next_commands",summarize=100)
-        layers.append(next_commands)
-
-    # commands & situation analysis
-    with tf.variable_scope("input"):
-        input = tf.concat((tf.reshape(next_commands,[a.batch_size,3*a.frames,4]), tf.reshape(situation_analysis,[a.batch_size,2*a.ngf,4])), axis=1)
-        layers.append(input)
-
-    with tf.variable_scope("f2_fully_connected_1"):
-        rectified = tf.nn.relu(layers[-1])
-        output = tf.reshape(rectified,[a.batch_size,2*a.ngf*4+12*a.frames])
-        output = commands(output, a.ngf*8+12*a.frames)
-        layers.append(output)
-
-    for next_bet_channels in range(2,a.f2-1):
-        # fully_connected: [batch, 12*11+ngf*8] => [batch, 12*frames+ngf*8]
-        with tf.variable_scope("f2_fully_connected_%d" % (next_bet_channels)):
-            rectified = tf.nn.relu(layers[-1])
-            output = commands(rectified, a.ngf*8+12*a.frames)
-            if not a.nodrop and next_bet_channels<a.f2-5:
-                 output = tf.nn.dropout(output, keep_prob=0.5, seed=a.seed)
-#            output = tf.Print(output,[output],"output f2_%d" % (next_bet_channels), summarize=100)
-            layers.append(output)
-
-    # next bet [batch, 12]
-    with tf.variable_scope("next_bet"):
-        rectified = tf.nn.relu(layers[-1])
-        output = commands(rectified, 12)
-        output = tf.abs(output)
-        next_bet = tf.scalar_mul(1000,output) # 1000 is totally arbitrary
-        next_bet = tf.Print(next_bet,[next_bet],"next_bet", summarize=100)
-        layers.append(next_bet)
-
-    # [batch,12]+[batch,frames,12] => [batch,frames+1,12]
-    concat = tf.concat((tf.reshape(next_bet,[a.batch_size,1,12]),next_commands),axis=1)
-    layers.append(concat)
-
-#    concat = tf.Print(concat,[concat],'generator_concat:',summarize=100)
-    return layers[-1]
 
 # assume bet[0] = P1 life
 #        bet[1] = P2 life
@@ -749,7 +640,7 @@ def save_images(fetches, step=None):
     for i, in_path in enumerate(fetches["paths"]):
         name, _ = os.path.splitext(os.path.basename(in_path.decode("utf8")))
         fileset = {"name": name, "step": step}
-        for kind in ["inputs", "outputs", "meta", "targets", "next_commands"]:
+        for kind in ["inputs", "outputs", "meta", "targets", "next_commands", "situation"]:
             if kind == "inputs":
               filename = name + ".png"
             else:
@@ -947,6 +838,7 @@ def main():
             "outputs": convert_meta(outputs),
             "targets": convert_meta(targets),
             "next_commands": converted_next_commands,
+            "situation": convert_meta(situation),
         }
 
     # summaries
