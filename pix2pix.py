@@ -56,7 +56,7 @@ a = parser.parse_args()
 EPS = 1e-12
 CROP_SIZE = 256
 
-Examples = collections.namedtuple("Examples", "paths, inputs, meta, targets, count, steps_per_epoch")
+Examples = collections.namedtuple("Examples", "paths, inputs, meta, targets, last_situation, count, steps_per_epoch")
 Model = collections.namedtuple("Model", "outputs, gen_loss, gen_grads_and_vars, situation, train, next_commands")
 
 
@@ -274,11 +274,42 @@ def load_examples():
 #    if target_input is not None:
 #      target_input = tf.Print(target_input, [target_input], "load targets_input:", summarize=100)
 
-    if target_input is not None:
-      paths_batch, inputs_batch, meta_batch, targets_batch = tf.train.batch([paths, input_images, meta_input, target_input], batch_size=a.batch_size)
+    # Adding situation inputs
+    situation_paths = glob.glob(os.path.join(a.input_dir, "*.situation"))
+
+    # prepare data from meta file
+    def split_situation(contents):
+        tensor = tf.string_split([contents],'\t').values
+        tensor = tf.reshape(tensor,[8*a.ngf])
+        tensor = tf.string_to_number(tensor,tf.float32)
+        return tensor
+
+    if len(situation_paths)==0:
+        situation_input = None
     else:
+        with tf.name_scope("load_situation"):
+            situation_path_queue = tf.train.string_input_producer(situation_paths)
+            situation_reader = tf.WholeFileReader()
+            situation_paths, situation_contents = situation_reader.read(situation_path_queue)
+#            situation_contents = tf.Print(situation_contents, [situation_contents], "situation_contents:", summarize=100)
+            situation_input = split_situation(situation_contents)
+
+#    situation_input = tf.Print(situation_input, [situation_input], "load situation_input:",summarize=100)
+#    if situation_input is not None:
+#      situation_input = tf.Print(situation_input, [situation_input], "load situation_input:", summarize=100)
+
+    if target_input is not None and situation_input is None:
+      paths_batch, inputs_batch, meta_batch, targets_batch = tf.train.batch([paths, input_images, meta_input, target_input], batch_size=a.batch_size)
+      situation_batch = None
+    elif target_input is None and situation_input is None:
       paths_batch, inputs_batch, meta_batch = tf.train.batch([paths, input_images, meta_input], batch_size=a.batch_size)
       targets_batch = None
+      situation_batch = None
+    elif target_input is None and situation_input is not None:
+      paths_batch, inputs_batch, meta_batch, situation_batch = tf.train.batch([paths, input_images, meta_input, situation_input], batch_size=a.batch_size)
+      targets_batch = None
+    elif target_input is not None and situation_input is not None:
+      paths_batch, inputs_batch, meta_batch, targets_batch, situation_batch = tf.train.batch([paths, input_images, meta_input, target_input, situation_input], batch_size=a.batch_size)
 
     steps_per_epoch = int(math.ceil(len(input_paths) / a.batch_size))
 
@@ -287,12 +318,13 @@ def load_examples():
         inputs=inputs_batch,
         meta=meta_batch,
         targets=targets_batch,
+        last_situation=situation_batch,
         count=len(input_paths),
         steps_per_epoch=steps_per_epoch,
     )
 
 
-def create_situation_analysis_generator(generator_inputs):
+def create_situation_analysis_generator(generator_inputs, last_situation):
     layers = []
 
 #    generator_inputs = tf.Print(generator_inputs,[generator_inputs],"generator_inputs:",summarize=256)
@@ -332,6 +364,10 @@ def create_situation_analysis_generator(generator_inputs):
         # fully_connected: [batch, 2, 2, 8*ngf] => [batch, 2*4*ngf]
         rectified = tf.nn.relu(layers[-1])
         output = tf.reshape(rectified,[a.batch_size,2*2*a.ngf*8])
+        if last_situation is not None:
+          output = tf.concat((output, last_situation), axis=1)
+        else:
+          output = tf.concat((output, tf.fill([a.batch_size,8*a.ngf],0.0)),axis=1)
         output = commands(output, 2*a.ngf*4)
         output = tf.Print(output,[output],"situation",summarize=1000)
         layers.append(output)
@@ -404,138 +440,58 @@ def create_next_bet_generator(situation_analysis, next_commands):
 
     return layers[-1]
 
-    # [batch,12]+[batch,frames,12] => [batch,frames+1,12]
-#    concat = tf.concat((tf.reshape(next_bet,[a.batch_size,1,12]),next_commands),axis=1)
-#    concat = tf.Print(concat,[concat],'generator_concat:',summarize=100)
-#    return concat
 
 
-# assume bet[0] = P1 life
-#        bet[1] = P2 life
-#        bet[2] = time
+# assume analysis[0] = guess P1 life
+#        analysis[1] = guess P2 life
+#        analysis[2] = guess time
+#        analysis[3] = guess last P1 life
+#        analysis[4] = guess last P2 life
+#        analysis[5] = guess last time
+#
+#        actual[0] = P1 life
+#        actual[1] = P2 life
+#        actual[2] = time
+#
+#        last[0] = last P1 life
+#        last[1] = last P2 life
+#        last[2] = last time
 #
 # this magic formula aims to 
 # optimize p1_life & p2_life by time
-def get_situation_loss(actual, bet):
-
-#    p1_life = bet[:,0:1]           # ex:  104/176   196/176
-#    p2_life = bet[:,1:2]           # ex:  176/176   655/176
-#    actual_time    = actual[:,2:3] # ex:  107/147   130/147
-#    actual_p1_life = actual[:,0:1] # ex:             26/176
-#    actual_p2_life = actual[:,1:2] # ex:  90/176    176/176
-#    time = tf.Print(time,[time],"time:")
-
-#    max_kill_time = tf.fill([a.batch_size,1],100.0)
-#    max_time = tf.fill([a.batch_size,1],153.0)
-#    max_life = tf.fill([a.batch_size,1],176.0)
-
-#    actual = actual[:,0:3]
-#    bet    = bet[:,0:3]
-
-    actual = tf.slice(actual,[0,0],[a.batch_size,3])
-    bet    = tf.slice(bet,[0,0],[a.batch_size,3])
-
-    return  tf.abs(actual-bet)
-
-# assume bet[0] = P1 life
-#        bet[1] = P2 life
-#        bet[2] = time
-#
-# this magic formula aims to 
-# optimize p1_life & p2_life by time
-def get_magic_target(actual, bet):
-
-    p1_life = bet[:,0:1]           # ex:  104/176   196/176
-    p2_life = bet[:,1:2]           # ex:  176/176   655/176
-    actual_time    = actual[:,2:3] # ex:  107/147   130/147
-    actual_p1_life = actual[:,0:1] # ex:             26/176
-    actual_p2_life = actual[:,1:2] # ex:  90/176    176/176
-#    time = tf.Print(time,[time],"time:")
-
-    max_kill_time = tf.fill([a.batch_size,1],100.0)
-    max_time = tf.fill([a.batch_size,1],153.0)
-    max_life = tf.fill([a.batch_size,1],176.0)
-
-    magic_p2_life = actual_time                              # 107                  130
-    magic_p2_life = tf.multiply(magic_p2_life,max_life)      # 107*176 = 18832      130*176 = 22880
-    magic_p2_life = tf.divide(magic_p2_life, max_time)       # 18832 / 147 = 128    22880 / 147 = 155
-    magic_p2_life = tf.minimum(actual_p2_life,magic_p2_life) # min(90,176) = 90     min(176,155) = 155
+def get_situation_loss(actual, analysis, last):
     
-    magic_p1_life = actual_time                                # 107                  130
-    magic_p1_life = tf.multiply(magic_p1_life,max_life)        # 107*176 = 18832      130*176 = 22880
-    magic_p1_life = tf.divide(magic_p1_life, max_time)         # 18832 / 147 = 128    22880 / 147 = 155
-    magic_p1_life = tf.minimum(max_life,tf.maximum(actual_p1_life,magic_p1_life)) # min(176,max(104,128)) = 128  min(176,max(26,155)) = 155
+    actual   = tf.slice(actual,[0,0],[a.batch_size,3])
+    analysis = tf.slice(analysis,[0,0],[a.batch_size,6])
+    last     = tf.slice(last,[0,0],[a.batch_size,3])
+    
+    target   = tf.concat((actual, last), axis=1)
+    
+    return  tf.abs(target-analysis)
 
-    magic_bet = tf.concat((magic_p1_life,magic_p2_life,actual_time,tf.fill([a.batch_size,12-3],0.0)),axis=1)
 
-    return magic_bet
-
-# how good Ryu is
-def get_performance(last, actual, bet):
-
-    last_p1_life = tf.reshape(last[0][0:1],[])
-    last_p2_life = tf.reshape(last[0][1:2],[])
-    p1_life = tf.reshape(actual[0][0:1],[])           # ex:  104/176   196/176
-    p2_life = tf.reshape(actual[0][1:2],[])           # ex:  176/176   655/176
-    actual_time = tf.reshape(actual[0][2:3],[]) # ex:  107/147   130/147
-    magic_bet = get_magic_target(actual, bet)
-    magic_p1_life = tf.reshape(magic_bet[0][0:1],[])
-    magic_p2_life = tf.reshape(magic_bet[0][1:2],[])
-
-    zero = tf.constant(0.0)
-    zerol = lambda: zero
-    defaut = tf.maximum(zero,-magic_p1_life+p1_life)+tf.maximum(zero,-magic_p2_life+p2_life)
-    defaut = tf.Print(defaut,[defaut],"perf_loss:")
-    defautl = lambda: defaut
-
-# Ryu hits Zangief => good
-# Ryu has hit Zangief enough => good
-# Ryu was not hit too much => good
-# otherwise, reduce_mean
-    perf = tf.case([( tf.greater(last_p2_life, p2_life) , zerol ),  
-                    ( tf.greater(magic_p2_life, p2_life), zerol ),  
-                    ( tf.greater(p1_life, magic_p1_life), zerol ),] ,
-                   default=defautl ) 
-
-    return perf
-
-def create_model(inputs, meta, targets):
+def create_model(inputs, meta, targets, last_situation):
     with tf.variable_scope("situation_analysis") as scope:
-        situation_analysis = create_situation_analysis_generator(inputs)
+        situation_analysis = create_situation_analysis_generator(inputs,last_situation)
 
     with tf.variable_scope("generator") as scope:
         next_commands = create_next_commands_generator(situation_analysis)
         next_bet = create_next_bet_generator(situation_analysis, next_commands)
         next_bet = tf.reshape(next_bet,[a.batch_size,12])
-
-        #outputs = create_generator(inputs)
-#        outputs = create_generator(inputs, meta)  # cheating
-#        outputs = tf.Print(outputs,[outputs],"outputs full:",summarize=100)
-
-        #next_commands = outputs[:,1:(a.frames+1)]
-        #next_bet = tf.reshape(outputs[:,0:1],[a.batch_size,12])
-#        next_commands = tf.Print(next_commands,[next_commands],"next_commands:",summarize=100)
         next_bet = tf.Print(next_bet,[next_bet],"next_bet:",summarize=10)
 
         situation_targets = targets
+
+    if last_situation is None:
+        last_situation = tf.slice(situation_analysis,[0,3],[a.batch_size,3])
 
     if targets is None:
         targets = next_bet # without targets, no change on model
         situation_targets = situation_analysis
 
-#    with tf.name_scope("generator_loss"):
-        # abs(targets - outputs) => 0
-#        targets = tf.Print(targets,[targets],"targets:",summarize=100)
-#        gen_loss_L1 = tf.reduce_mean(tf.abs(targets[:,0:2] - next_bet[:,0:2])) # back to thirds only
-#        gen_loss_L1 = tf.Print(gen_loss_L1,[gen_loss_L1],"gen_loss_L1:")
-
-#    with tf.name_scope("perf"):
-#        perf_loss = get_performance(meta, targets, next_bet)
-#        perf_loss = tf.Print(perf_loss, [perf_loss], "perf_loss:")
-
     with tf.name_scope("situation"):
         situation_targets = tf.Print(situation_targets, [situation_targets], "targets:")
-        situation = get_situation_loss(situation_targets,situation_analysis)
+        situation = get_situation_loss(situation_targets,situation_analysis,last_situation)
 
     with tf.name_scope("p1_life_train"):
         p1_life_loss = 0.1*tf.reduce_mean(tf.slice(situation,[0,0],[a.batch_size,1]))
@@ -563,51 +519,36 @@ def create_model(inputs, meta, targets):
             time_grads_and_vars = time_optim.compute_gradients(time_loss, var_list=time_tvars)
             time_train = time_optim.apply_gradients(time_grads_and_vars)
 
+    with tf.name_scope("last_p1_life_train"):
+        with tf.control_dependencies([p1_life_train,p2_life_train,time_train]):
+            last_p1_life_loss = 0.1*tf.reduce_mean(tf.slice(situation,[0,3],[a.batch_size,1]))
+            last_p1_life_loss = tf.Print(last_p1_life_loss,[last_p1_life_loss],"last_p1_life_loss:")
+            last_p1_life_tvars = [var for var in tf.trainable_variables() if var.name.startswith("situation")]
+            last_p1_life_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+            last_p1_life_grads_and_vars = last_p1_life_optim.compute_gradients(last_p1_life_loss, var_list=last_p1_life_tvars)
+            last_p1_life_train = last_p1_life_optim.apply_gradients(last_p1_life_grads_and_vars)
+
+    with tf.name_scope("last_p2_life_train"):
+        with tf.control_dependencies([p1_life_train,p2_life_train,time_train,last_p1_life_train]):
+            last_p2_life_loss = 0.1*tf.reduce_mean(tf.slice(situation,[0,4],[a.batch_size,1]))
+            last_p2_life_loss = tf.Print(last_p2_life_loss,[last_p2_life_loss],"last_p2_life_loss:")
+            last_p2_life_tvars = [var for var in tf.trainable_variables() if var.name.startswith("situation")]
+            last_p2_life_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+            last_p2_life_grads_and_vars = last_p2_life_optim.compute_gradients(last_p2_life_loss, var_list=last_p2_life_tvars)
+            last_p2_life_train = last_p2_life_optim.apply_gradients(last_p2_life_grads_and_vars)
+
+    with tf.name_scope("last_time_train"):
+        with tf.control_dependencies([p1_life_train,p2_life_train,time_train,last_p1_life_train,last_p2_life_train]):
+            last_time_loss = 0.1*tf.reduce_mean(tf.slice(situation,[0,5],[a.batch_size,1]))
+            last_time_loss = tf.Print(time_loss,[last_time_loss],"last_time_loss:")
+            last_time_tvars = [var for var in tf.trainable_variables() if var.name.startswith("situation")]
+            last_time_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
+            last_time_grads_and_vars = time_optim.compute_gradients(last_time_loss, var_list=last_time_tvars)
+            last_time_train = time_optim.apply_gradients(last_time_grads_and_vars)
+
     with tf.name_scope("situation_loss"):
-        situation_loss = p1_life_loss + p2_life_loss + time_loss
+        situation_loss = p1_life_loss + p2_life_loss + time_loss + last_p1_life_loss + last_p2_life_loss + last_time_loss
         situation_loss = tf.Print(situation_loss, [situation_loss], "situation_loss:")
-
-#        zero = tf.constant(0.0)
-#        situation_loss = tf.case([(tf.equal(perf_loss,zero),lambda:tf.scalar_mul(0.0000001,situation_loss))], default=lambda:situation_loss)
-#        situation_loss = tf.Print(situation_loss,[situation_loss],"situation_loss:")
-
-
-#    with tf.name_scope("magic"):
-#        zero = tf.constant(0.0)
-
-#        magic_target = get_magic_target(targets,next_bet)
-#        magic_target = tf.Print(magic_target,[magic_target],"magic_target:",summarize=100)
-#        magic_loss = tf.reduce_mean(tf.abs(magic_target[:,0:2] - next_bet[:,0:2]))
-#        magic_loss = tf.scalar_mul(a.magic_weight, magic_loss)
-#        magic_loss = tf.case([(tf.equal(perf_loss, zero), lambda:tf.scalar_mul(0.0000001,magic_loss))], default=lambda:magic_loss)
-#        magic_loss  = tf.Print(magic_loss, [magic_loss], "magic_loss:")
-
-#    with tf.name_scope("gen_loss"):
-#        zero = tf.constant(0.0)
-
-#        gen_loss = tf.scalar_mul(a.l1_weight,gen_loss_L1)
-#        gen_loss = tf.case([(tf.equal(perf_loss,zero),lambda:tf.scalar_mul(0.0000001,gen_loss))], default=lambda:gen_loss)
-#        gen_loss = tf.Print(gen_loss,[gen_loss],"gen_loss:")
-
-#    with tf.name_scope("situation_train"):
-#        situation_tvars = [var for var in tf.trainable_variables() if var.name.startswith("situation_analysis")]
-#        situation_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-#        situation_grads_and_vars = situation_optim.compute_gradients(situation_loss, var_list=situation_tvars)
-#        situation_train = situation_optim.apply_gradients(situation_grads_and_vars)
-
-#    with tf.name_scope("magic_train"):
-#        magic_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-#        magic_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-#        magic_grads_and_vars = magic_optim.compute_gradients(magic_loss, var_list=magic_tvars)
-#        magic_train = magic_optim.apply_gradients(magic_grads_and_vars)
-
-#   
-#    with tf.name_scope("generator_train"):
-#      with tf.control_dependencies([magic_train]):
-#        gen_tvars = [var for var in tf.trainable_variables() if var.name.startswith("generator")]
-#        gen_optim = tf.train.AdamOptimizer(a.lr, a.beta1)
-#        gen_grads_and_vars = gen_optim.compute_gradients(gen_loss, var_list=gen_tvars)
-#        gen_train = gen_optim.apply_gradients(gen_grads_and_vars)
 
 #    ema = tf.train.ExponentialMovingAverage(decay=0.99)
 #    update_losses = ema.apply([gen_loss])
@@ -774,7 +715,7 @@ def main():
     # inputs are [batch_size, height, width, channels]
     # targets are [batch_size, 12]
     # meta are [batch_size, 12]
-    model = create_model(examples.inputs, examples.meta, examples.targets)
+    model = create_model(examples.inputs, examples.meta, examples.targets, examples.last_situation)
 
     inputs = deprocess(examples.inputs)
     meta   = examples.meta
