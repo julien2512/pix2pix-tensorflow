@@ -51,12 +51,14 @@ parser.add_argument("--l1_weight", type=float, default=0.005, help="weight of L1
 parser.add_argument("--perf_weight", type=float, default=0.01, help="weight of perf loss")
 parser.add_argument("--nodrop", type=bool, default=True, help="Desactivate the drop layer")
 
+parser.add_argument("--images", type=int, default=1, help="number of images from which to learn")
+
 a = parser.parse_args()
 
 EPS = 1e-12
 CROP_SIZE = 256
 
-Examples = collections.namedtuple("Examples", "paths, inputs, meta, targets, last_situation, count, steps_per_epoch")
+Examples = collections.namedtuple("Examples", "inputs, meta, targets, last_situation, count, steps_per_epoch")
 Model = collections.namedtuple("Model", "outputs, gen_loss, gen_grads_and_vars, situation, train, next_commands")
 
 
@@ -98,12 +100,12 @@ def augment(image, brightness):
 
 def conv(batch_input, out_channels, stride):
     with tf.variable_scope("conv"):
-        in_channels = batch_input.get_shape()[3]
-        filter = tf.get_variable("filter", [4, 4, in_channels, out_channels], dtype=tf.float32, initializer=tf.random_normal_initializer(0, 0.02))
+        in_channels = batch_input.get_shape()[4]
+        filter = tf.get_variable("filter", [1, 4, 4, in_channels, out_channels], dtype=tf.float32, initializer=tf.random_normal_initializer(0, 0.02))
         # [batch, in_height, in_width, in_channels], [filter_width, filter_height, in_channels, out_channels]
         #     => [batch, out_height, out_width, out_channels]
-        padded_input = tf.pad(batch_input, [[0, 0], [1, 1], [1, 1], [0, 0]], mode="CONSTANT")
-        conv = tf.nn.conv2d(padded_input, filter, [1, stride, stride, 1], padding="VALID")
+        padded_input = tf.pad(batch_input, [[0, 0], [1, 1], [1, 1], [1, 1], [0, 0]], mode="CONSTANT")
+        conv = tf.nn.conv3d(padded_input, filter, [1, stride, stride, stride, 1], padding="VALID")
         return conv
 
 def situation(input,situation_size):
@@ -133,7 +135,7 @@ def batchnorm(input):
         # this block looks like it has 3 inputs on the graph unless we do this
         input = tf.identity(input)
 
-        channels = input.get_shape()[3]
+        channels = input.get_shape()[4]
         offset = tf.get_variable("offset", [channels], dtype=tf.float32, initializer=tf.zeros_initializer())
         scale = tf.get_variable("scale", [channels], dtype=tf.float32, initializer=tf.random_normal_initializer(1.0, 0.02))
         mean, variance = tf.nn.moments(input, axes=[0, 1, 2], keep_dims=False)
@@ -191,20 +193,6 @@ def load_examples():
     else:
         raise Exception("all image files names are not numbers")
 
-    with tf.name_scope("load_images"):
-        path_queue = tf.train.string_input_producer(input_paths)
-        reader = tf.WholeFileReader()
-        paths, contents = reader.read(path_queue)
-        raw_input = decode(contents)
-        raw_input = tf.image.convert_image_dtype(raw_input, dtype=tf.float32)
-
-        assertion = tf.assert_equal(tf.shape(raw_input)[2], 3, message="image does not have 3 channels")
-        with tf.control_dependencies([assertion]):
-            raw_input = tf.identity(raw_input)
-
-        raw_input.set_shape([None, None, 3])
-        raw_input = preprocess(raw_input)
-
     # synchronize seed for image operations so that we do the same operations to both
     # input and output images
     seed = a.seed
@@ -224,15 +212,41 @@ def load_examples():
             raise Exception("scale size cannot be less than crop size")
         return r
 
-    with tf.name_scope("input_images"):
-        input_images = transform(raw_input)
+    with tf.name_scope("load_images"):
+        path_queue = tf.train.string_input_producer(input_paths)
+        reader = tf.WholeFileReader()
+       
+        paths, contents = reader.read(path_queue)
+        raw_input = decode(contents)
+        raw_input = tf.image.convert_image_dtype(raw_input, dtype=tf.float32)
+        assertion = tf.assert_equal(tf.shape(raw_input)[2], 3, message="image does not have 3 channels")
+        with tf.control_dependencies([assertion]):
+          raw_input = tf.identity(raw_input)
+        raw_input.set_shape([None, None, 3])
+        raw_input = preprocess(raw_input)
+        raw_input = transform(raw_input)
+        raw_input = tf.stack([raw_input],0)
+        input_images = raw_input
+ 
+        for number in range(2,a.images):
+          paths, contents = reader.read(path_queue)
+          raw_input = decode(contents)
+          raw_input = tf.image.convert_image_dtype(raw_input, dtype=tf.float32)
+          assertion = tf.assert_equal(tf.shape(raw_input)[2], 3, message="image does not have 3 channels")
+          with tf.control_dependencies([assertion]):
+            raw_input = tf.identity(raw_input)
+          raw_input.set_shape([None, None, 3])
+          raw_input = preprocess(raw_input)
+          raw_input = transform(raw_input)
+          raw_input = tf.stack([raw_input],0)
+          input_images = tf.concat([input_images,raw_input],0)
 
     # Adding meta & targets inputs
     meta_paths = glob.glob(os.path.join(a.input_dir, "*.meta"))
     if len(meta_paths) == 0:
         raise Exception("input_dir contains no meta files")
-    if len(meta_paths) != len(input_paths):
-        raise Exception("input_dir contains not enough meta files")
+#    if len(meta_paths) != len(input_paths):
+#        raise Exception("input_dir contains not enough meta files")
 
     if all(get_name(path).isdigit() for path in meta_paths):
         meta_paths = sorted(meta_paths, key=lambda path: int(get_name(path)))
@@ -299,22 +313,23 @@ def load_examples():
 #      situation_input = tf.Print(situation_input, [situation_input], "load situation_input:", summarize=100)
 
     if target_input is not None and situation_input is None:
-      paths_batch, inputs_batch, meta_batch, targets_batch = tf.train.batch([paths, input_images, meta_input, target_input], batch_size=a.batch_size)
+      inputs_batch, meta_batch, targets_batch = tf.train.batch([input_images, meta_input, target_input], batch_size=a.batch_size)
       situation_batch = None
     elif target_input is None and situation_input is None:
-      paths_batch, inputs_batch, meta_batch = tf.train.batch([paths, input_images, meta_input], batch_size=a.batch_size)
+      inputs_batch, meta_batch = tf.train.batch([input_images, meta_input], batch_size=a.batch_size)
       targets_batch = None
       situation_batch = None
     elif target_input is None and situation_input is not None:
-      paths_batch, inputs_batch, meta_batch, situation_batch = tf.train.batch([paths, input_images, meta_input, situation_input], batch_size=a.batch_size)
+      inputs_batch, meta_batch, situation_batch = tf.train.batch([input_images, meta_input, situation_input], batch_size=a.batch_size)
       targets_batch = None
     elif target_input is not None and situation_input is not None:
-      paths_batch, inputs_batch, meta_batch, targets_batch, situation_batch = tf.train.batch([paths, input_images, meta_input, target_input, situation_input], batch_size=a.batch_size)
+      inputs_batch, meta_batch, targets_batch, situation_batch = tf.train.batch([input_images, meta_input, target_input, situation_input], batch_size=a.batch_size)
 
-    steps_per_epoch = int(math.ceil(len(input_paths) / a.batch_size))
+#    steps_per_epoch = int(math.ceil(len(input_paths) / a.batch_size))
+    steps_per_epoch = 1
 
     return Examples(
-        paths=paths_batch,
+#        paths=paths_batch,
         inputs=inputs_batch,
         meta=meta_batch,
         targets=targets_batch,
@@ -361,13 +376,13 @@ def create_situation_analysis_generator(generator_inputs, last_situation):
     # the last layer to get the situation analysis
     # aims to reduce the shape because of the encode 8 zero bug
     with tf.variable_scope("situation"):
-        # fully_connected: [batch, 2, 2, 8*ngf] => [batch, 2*4*ngf]
+        # fully_connected: [batch, 2, 2, 8*ngf] => [batch, 3*2*4*ngf]
         rectified = tf.nn.relu(layers[-1])
-        output = tf.reshape(rectified,[a.batch_size,2*2*a.ngf*8])
+        output = tf.reshape(rectified,[a.batch_size,3*2*2*a.ngf*8])
         if last_situation is not None:
           output = tf.concat((output, last_situation), axis=1)
         else:
-          output = tf.concat((output, tf.fill([a.batch_size,8*a.ngf],0.0)),axis=1)
+          output = tf.concat((output, tf.fill([a.batch_size,3*8*a.ngf],0.0)),axis=1)
         output = commands(output, 2*a.ngf*4)
         output = tf.Print(output,[output],"situation",summarize=1000)
         layers.append(output)
@@ -735,6 +750,7 @@ def main():
     # reverse any processing on images so they can be written to disk or displayed to user
     with tf.name_scope("convert_inputs"):
         converted_inputs = convert(inputs)
+        converted_inputs = tf.slice(converted_inputs,[0,0,0,0,0],[1,1,-1,-1,-1])[0]
 
     commands_snes9x = [[['UP','DOWN','LEFT','RIGHT','A','B','X','Y','L','R','START','SELECT']]]
 #    commands_snes9x = tf.Print(commands_snes9x,[commands_snes9x],"commands_snes9x:",summarize=1000)
@@ -773,7 +789,7 @@ def main():
 
     with tf.name_scope("encode_images"):
         display_fetches = {
-            "paths": examples.paths,
+#            "paths": examples.paths,
             "inputs": tf.map_fn(tf.image.encode_png, converted_inputs, dtype=tf.string, name="input_pngs"),
             "meta": convert_meta(meta),
             "outputs": convert_meta(outputs),
