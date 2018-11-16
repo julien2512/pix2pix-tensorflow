@@ -56,9 +56,9 @@ parser.add_argument("--images", type=int, default=1, help="number of images from
 a = parser.parse_args()
 
 EPS = 1e-12
-CROP_SIZE = 256
+CROP_SIZE = 128 # 256 # conv3d ram issue test
 
-Examples = collections.namedtuple("Examples", "inputs, meta, targets, last_situation, count, steps_per_epoch")
+Examples = collections.namedtuple("Examples", "paths, inputs, meta, targets, last_situation, count, steps_per_epoch")
 Model = collections.namedtuple("Model", "outputs, gen_loss, gen_grads_and_vars, situation, train, next_commands")
 
 
@@ -227,8 +227,8 @@ def load_examples():
         raw_input = transform(raw_input)
         raw_input = tf.stack([raw_input],0)
         input_images = raw_input
- 
-        for number in range(2,a.images):
+
+        for number in range(2,a.images+1):
           paths, contents = reader.read(path_queue)
           raw_input = decode(contents)
           raw_input = tf.image.convert_image_dtype(raw_input, dtype=tf.float32)
@@ -313,23 +313,34 @@ def load_examples():
 #      situation_input = tf.Print(situation_input, [situation_input], "load situation_input:", summarize=100)
 
     if target_input is not None and situation_input is None:
-      inputs_batch, meta_batch, targets_batch = tf.train.batch([input_images, meta_input, target_input], batch_size=a.batch_size)
+      paths_batch, inputs_batch, meta_batch, targets_batch = tf.train.batch([input_paths[-1],input_images, meta_input, target_input], batch_size=a.batch_size)
       situation_batch = None
     elif target_input is None and situation_input is None:
-      inputs_batch, meta_batch = tf.train.batch([input_images, meta_input], batch_size=a.batch_size)
+      paths_batch, inputs_batch, meta_batch = tf.train.batch([input_paths[-1],input_images, meta_input], batch_size=a.batch_size)
       targets_batch = None
       situation_batch = None
     elif target_input is None and situation_input is not None:
-      inputs_batch, meta_batch, situation_batch = tf.train.batch([input_images, meta_input, situation_input], batch_size=a.batch_size)
+      paths_batch, inputs_batch, meta_batch, situation_batch = tf.train.batch([input_paths[-1],input_images, meta_input, situation_input], batch_size=a.batch_size)
       targets_batch = None
     elif target_input is not None and situation_input is not None:
-      inputs_batch, meta_batch, targets_batch, situation_batch = tf.train.batch([input_images, meta_input, target_input, situation_input], batch_size=a.batch_size)
+      paths_batch, inputs_batch, meta_batch, targets_batch, situation_batch = tf.train.batch([input_paths[-1], input_images, meta_input, target_input, situation_input], batch_size=a.batch_size)
 
 #    steps_per_epoch = int(math.ceil(len(input_paths) / a.batch_size))
     steps_per_epoch = 1
 
+    if paths_batch is not None:
+      print(paths_batch.get_shape())
+    if inputs_batch is not None:
+      print(inputs_batch.get_shape())
+    if meta_batch is not None:
+      print(meta_batch.get_shape())
+    if targets_batch is not None:
+      print(targets_batch.get_shape())
+    if situation_batch is not None:
+      print(situation_batch.get_shape())
+
     return Examples(
-#        paths=paths_batch,
+        paths=paths_batch,
         inputs=inputs_batch,
         meta=meta_batch,
         targets=targets_batch,
@@ -341,6 +352,8 @@ def load_examples():
 
 def create_situation_analysis_generator(generator_inputs, last_situation):
     layers = []
+
+    print(generator_inputs.get_shape())
 
 #    generator_inputs = tf.Print(generator_inputs,[generator_inputs],"generator_inputs:",summarize=256)
 
@@ -378,11 +391,12 @@ def create_situation_analysis_generator(generator_inputs, last_situation):
     with tf.variable_scope("situation"):
         # fully_connected: [batch, 2, 2, 8*ngf] => [batch, 3*2*4*ngf]
         rectified = tf.nn.relu(layers[-1])
-        output = tf.reshape(rectified,[a.batch_size,3*2*2*a.ngf*8])
+        output = tf.reshape(rectified,[a.batch_size,3*a.ngf*8])
         if last_situation is not None:
+          print(last_situation.get_shape())
           output = tf.concat((output, last_situation), axis=1)
         else:
-          output = tf.concat((output, tf.fill([a.batch_size,3*8*a.ngf],0.0)),axis=1)
+          output = tf.concat((output, tf.fill([a.batch_size,8*a.ngf],0.0)),axis=1)
         output = commands(output, 2*a.ngf*4)
         output = tf.Print(output,[output],"situation",summarize=1000)
         layers.append(output)
@@ -789,7 +803,7 @@ def main():
 
     with tf.name_scope("encode_images"):
         display_fetches = {
-#            "paths": examples.paths,
+            "paths": examples.paths,
             "inputs": tf.map_fn(tf.image.encode_png, converted_inputs, dtype=tf.string, name="input_pngs"),
             "meta": convert_meta(meta),
             "outputs": convert_meta(outputs),
